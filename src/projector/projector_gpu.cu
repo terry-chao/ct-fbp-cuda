@@ -1,8 +1,8 @@
 // GPU 前向投影（阶段 1）：naive kernel，1 线程 = 1 (角度, 探测器单元)。
 // 采样公式与 CPU 参考实现逐字一致，保证结果可在容差内对齐。
-#include "projector.h"
-#include "cuda_check.h"
-#include "cuda_utils.cuh"  // bilinearSample（阶段 6 起跨文件共享）
+#include "ct/projector/projector.h"
+#include "core/cuda_check.h"
+#include "core/cuda_utils.cuh"  // bilinearSample（阶段 6 起跨文件共享）
 
 #include <cmath>
 

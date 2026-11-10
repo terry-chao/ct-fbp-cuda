@@ -1,10 +1,10 @@
 // 阶段 9：CUDA Graphs —— 滤波→反投影链的 stream capture / instantiate / replay。
 // 知识点：cudaStreamBeginCapture(ThreadLocal) / cudaStreamEndCapture /
 // cudaGraphInstantiate / cudaGraphLaunch / cudaGraphGetNodes / cudaGraphExecDestroy。
-#include "graph.h"
-#include "backprojector.h"
-#include "cuda_check.h"
-#include "timer.h"
+#include "ct/recon/graph.h"
+#include "core/cuda_check.h"
+#include "ct/backprojector/backprojector.h"
+#include "ct/core/timer.h"
 
 namespace {
 

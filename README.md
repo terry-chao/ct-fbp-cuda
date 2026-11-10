@@ -46,7 +46,7 @@ texture memory 的硬件双线性插值可以把两次全局读 + 插值指令�
 
 ## 坐标与几何约定
 
-全项目（CPU/GPU 共用，见 `include/geometry.h`）：
+全项目（CPU/GPU 共用，见 `include/ct/core/geometry.h`）：
 
 ```text
 归一化视野 [-1,1]²，图像 N×N（row-major，index = i*N+j）
@@ -66,12 +66,13 @@ texture memory 的硬件双线性插值可以把两次全局读 + 插值指令�
 
 要求：
 
-- CUDA Toolkit ≥ 12.8（开发环境为 13.1；Blackwell 显卡需要 12.8+ 才有 sm_120）
+- CUDA Toolkit ≥ 12.8（本机 13.1 与 13.5 均验证可编译；Blackwell 显卡需要 12.8+ 才有 sm_120）
 - CMake ≥ 3.24
-- Visual Studio 2022/2026（MSVC 14.2x~14.4x；见下方说明）
+- Visual Studio 2022/2026（MSVC 14.2x~14.5x；见下方说明）
 - Ninja（VS 自带：`Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/`）
 
-一条命令（推荐，内部自动选 14.44 工具集 + Ninja）：
+一条命令（推荐，内部自动选 14.44 工具集 + Ninja；若 `build\` 已被 VS 生成器
+占用则自动改用 `build-ninja\`）：
 
 ```bat
 scripts\build.bat
@@ -88,16 +89,26 @@ cmake --build build
 产出三个可执行文件：`ct_fbp.exe`（主流水线）、`ct_tour.exe`（知识点巡礼）、
 `test_pipeline.exe`（测试）。
 
-> **注意**：nvcc（≤13.1）只支持 MSVC 2019~2022（19.2x~19.4x）作为 host 编译器。
-> 若默认工具集是 VS2026 的 19.51（如本开发机），用 `-vcvars_ver=14.44` 固定到
-> 已装的 VS2022 时代工具集即可。若用 VS 生成器打开 `.sln`，还需在 VS 安装器里
-> 勾选 CUDA 的 "Visual Studio Integration" 组件（本仓库默认走 Ninja，无此依赖）。
+> **注意**：CUDA ≤13.1 的 nvcc 只支持 MSVC 2019~2022（19.2x~19.4x）作为 host 编译器。
+> 若默认工具集是 VS2026 的 19.51，而 CUDA 仍是 13.1，用 `-vcvars_ver=14.44` 固定到
+> 已装的 VS2022 时代工具集即可；CUDA 13.5 已支持 VS2026 工具集，可直接用默认工具集。
+> 若用 VS 生成器打开 `.sln`，还需在 VS 安装器里勾选 CUDA 的 "Visual Studio
+> Integration" 组件（本仓库默认走 Ninja，无此依赖）。
+
+VS 生成器（CMake Tools / `cmake --build build --config Debug|Release`）同样可用，
+且 Debug/Release 都已验证能链接。
 
 目标架构默认 `sm_120`（RTX 50 系）；其他显卡用
 `-DCMAKE_CUDA_ARCHITECTURES=86`（30 系）/`89`（40 系）等覆盖。
 
-阶段 7 的动态并行（CDP2）需要 `-rdc=true` 与设备符号解析，CMakeLists 已按
-源文件设置，无需手工干预。
+CUDA 13.x 的 CCCL（thrust / libcu++）在 MSVC 传统预处理器下会直接 `#error`，
+CMakeLists 已为所有目标统一加 `/utf-8` 与 `-Xcompiler=/Zc:preprocessor`，无需手工干预。
+
+阶段 7 的动态并行（CDP2）需要 `-rdc=true` 与设备符号解析：`projector_cdp.cu` 单独编成
+`ct_cdp` 静态库（`CUDA_SEPARABLE_COMPILATION` + `CUDA_RESOLVE_DEVICE_SYMBOLS`），
+CMake 会自动插入 `nvcc -dlink` 并把设备链接产物并入 `ct_cdp.lib`，无需手工加参数。
+链接该库会带出 `cudadevrt.lib`（NVIDIA 用静态 CRT 编译），因此 MSVC 会给出
+`LNK4098: 默认库 LIBCMT 与其他库冲突` 的告警——这是 CDP 的正常现象，可忽略。
 
 ## 用法
 
@@ -265,22 +276,35 @@ CUDA Graphs 只在 launch-bound 的小配置赢（3~5×，512 上仅 5~9%）；�
 
 ## 目录结构
 
+模块约定：公共 API 放 `include/ct/<模块>/`，实现在 `src/<模块>/`，两棵目录一一对应；
+每个模块编译为同名静态库（`ct_projector`、`ct_filter`、`ct_backprojector`…），`recon`
+依赖各功能模块，可执行文件只链接模块库。`core` 存放坐标约定、计时与内部 CUDA 工具，
+`app` 只放可执行入口；CDP 因 `-rdc` 约束单独成 `ct_cdp` 库，由 projector 模块聚合。
+
 ```text
 ct-fbp-cuda/
 ├── CMakeLists.txt
 ├── scripts/build.bat        # Windows 一键构建（vcvars + Ninja）
 ├── tools/pgm2png.py         # PGM→PNG 显示辅助（需 Pillow）
-├── include/                 # 公共 API：geometry/phantom/projector/filter/backprojector/
-│                            #   sirt/graph/pipeline/io/metrics/timer
-├── src/                     # 实现：CPU 参考版 + GPU kernels
-│   ├── projector_cpu.cpp / projector_gpu.cu / projector_cdp.cu
-│   ├── filter_cpu.cpp / filter_gpu.cu
-│   ├── backprojector_cpu.cpp / backprojector_gpu.cu
-│   ├── sirt_gpu.cu          # 阶段 6：cuBLAS + Thrust + 统一内存
-│   ├── pipeline_gpu.cu      # 阶段 8：多流 / 多 GPU
-│   ├── graph_gpu.cu         # 阶段 9：CUDA Graphs
-│   ├── main.cpp             # CLI 主程序
-│   └── tour.cpp             # ct_tour：11 组知识点巡礼
+├── include/ct/              # 公共 API，按模块分目录
+│   ├── core/                #   geometry.h（坐标约定）、timer.h（CUDA Events 计时）
+│   ├── phantom/             #   phantom.h（Shepp-Logan 体模）
+│   ├── projector/           #   projector.h（前向投影：CPU / GPU / warp / atomic / CDP）
+│   ├── filter/              #   filter.h（Ramp 滤波：CPU / cuFFT）
+│   ├── backprojector/       #   backprojector.h（反投影：CPU / naive / texture）
+│   ├── metrics/             #   metrics.h（RMSE / PSNR）
+│   ├── io/                  #   io.h（PGM 读写）
+│   └── recon/               #   pipeline.h / sirt.h / graph.h（重建算法层）
+├── src/                     # 实现，目录与 include/ct/ 一一对应
+│   ├── app/                 #   main.cpp（CLI 主程序）、tour.cpp（ct_tour：11 组知识点巡礼）
+│   ├── core/                #   cuda_check.h、cuda_utils.cuh（内部工具头，不对外）
+│   ├── phantom/             #   phantom.cu
+│   ├── projector/           #   projector_cpu.cpp / projector_gpu.cu / projector_cdp.cu
+│   ├── filter/              #   filter_cpu.cpp / filter_gpu.cu
+│   ├── backprojector/       #   backprojector_cpu.cpp / backprojector_gpu.cu
+│   ├── metrics/             #   metrics.cpp / metrics_gpu.cu
+│   ├── io/                  #   io.cpp
+│   └── recon/               #   pipeline_gpu.cu（多流/多 GPU）、sirt_gpu.cu（阶段 6）、graph_gpu.cu（阶段 9）
 ├── tests/test_pipeline.cpp  # 零依赖测试（9 组）
 ├── plan/PLAN.md             # 阶段计划与验收标准
 └── docs/results/            # 输出图像 + 质量性能报告（RESULTS.md）

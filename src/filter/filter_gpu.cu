@@ -1,8 +1,8 @@
 // GPU Ramp 滤波（阶段 2）：cuFFT 批量 1D C2C FFT。
 // 流水线：补零 pad → FFT → 乘 |ν|·窗/M → IFFT → 裁回 n_det。
 // cuFFT plan / 频响 / 工作缓冲按 (M, n_det, n_angle, win) 缓存，重复调用零额外开销。
-#include "filter.h"
-#include "cuda_check.h"
+#include "ct/filter/filter.h"
+#include "core/cuda_check.h"
 
 #include <vector>
 

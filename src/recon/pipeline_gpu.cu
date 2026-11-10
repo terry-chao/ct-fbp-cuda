@@ -2,10 +2,10 @@
 // 知识点：cudaStreamCreate / cudaMemcpyAsync(D2H) / cudaMallocHost（锁页）/
 // cudaStreamSynchronize / cudaSetDevice / cudaDeviceCanAccessPeer /
 // cudaDeviceEnablePeerAccess / cudaMemcpyPeerAsync。
-#include "pipeline.h"
-#include "cuda_check.h"
-#include "projector.h"
-#include "timer.h"
+#include "ct/recon/pipeline.h"
+#include "core/cuda_check.h"
+#include "ct/core/timer.h"
+#include "ct/projector/projector.h"
 
 #include <algorithm>
 #include <cstdio>

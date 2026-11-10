@@ -143,7 +143,7 @@ p = A·x → r = b − p → r̂ = r / (A·1) → c = Aᵀ·r̂ → x += λ·c /
 
 - fp16 与 fp32 的 RMSE 在 4 位小数内一致（< 5e-3 验收线），fp16 单次迭代快 ~20%。
 - 统一内存与设备内存结果逐点一致；WDDM 下 `cudaMemPrefetchAsync` 为 best-effort，
-  失败即静默关闭（见 `sirt_gpu.cu` 的 `g_prefetchOk`），不影响正确性。
+  失败即静默关闭（见 `src/recon/sirt_gpu.cu` 的 `g_prefetchOk`），不影响正确性。
 - fp16 峰值显存反而更大，因为构建期需要 fp32 临时矩阵（`M·K·(4+2)` 字节）；
   16 角度约 192 MiB，64 角度约 768 MiB —— 稠密矩阵是 SIRT 的规模瓶颈。
 

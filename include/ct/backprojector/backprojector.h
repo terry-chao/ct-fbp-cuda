@@ -1,6 +1,6 @@
 #pragma once
 
-#include "geometry.h"
+#include "ct/core/geometry.h"
 
 #include <cuda_runtime.h>  // cudaStream_t（阶段 8 起公开函数支持指定流）
 

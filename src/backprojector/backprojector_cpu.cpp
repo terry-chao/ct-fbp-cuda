@@ -1,5 +1,5 @@
 // CPU 反投影参考实现：每像素对所有角度查投影值（线性插值，出界为 0），乘 Δθ。
-#include "backprojector.h"
+#include "ct/backprojector/backprojector.h"
 
 #include <cmath>
 #include <vector>

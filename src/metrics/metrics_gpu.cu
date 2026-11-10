@@ -1,6 +1,6 @@
 // GPU 指标计算（阶段 6）：Thrust inner_product（带二元变换的归约）/ minmax_element，
 // 与 CPU 版 computeMetrics 同一公式（rmse 平方差和、max_abs、ref 动态范围作 PSNR 峰值）。
-#include "metrics.h"
+#include "ct/metrics/metrics.h"
 
 #include <thrust/execution_policy.h>
 #include <thrust/reduce.h>

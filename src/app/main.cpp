@@ -1,18 +1,18 @@
 // CLI 与完整流水线编排：
 //   体模 → 前向投影 → Ramp 滤波 → 反投影 → 输出图像/指标/计时表
 // 用法见 usage()。--mode both 时逐阶段比对 GPU 与 CPU 结果。
-#include "backprojector.h"
-#include "cuda_check.h"
-#include "filter.h"
-#include "geometry.h"
-#include "graph.h"
-#include "io.h"
-#include "metrics.h"
-#include "phantom.h"
-#include "pipeline.h"
-#include "projector.h"
-#include "sirt.h"
-#include "timer.h"
+#include "core/cuda_check.h"
+#include "ct/backprojector/backprojector.h"
+#include "ct/core/geometry.h"
+#include "ct/core/timer.h"
+#include "ct/filter/filter.h"
+#include "ct/io/io.h"
+#include "ct/metrics/metrics.h"
+#include "ct/phantom/phantom.h"
+#include "ct/projector/projector.h"
+#include "ct/recon/graph.h"
+#include "ct/recon/pipeline.h"
+#include "ct/recon/sirt.h"
 
 #include <algorithm>
 #include <cstdio>

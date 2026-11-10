@@ -67,26 +67,31 @@
 ct-fbp-cuda/
 ├── CMakeLists.txt
 ├── README.md
-├── include/
-│   ├── phantom.h        # Shepp-Logan 体模生成接口
-│   ├── projector.h      # 前向投影（CPU/GPU）
-│   ├── filter.h         # Ramp 滤波（CPU/GPU）
-│   ├── backprojector.h  # 反投影（CPU/GPU naive/GPU texture）
-│   ├── io.h             # PGM 读写
-│   ├── metrics.h        # RMSE / PSNR
-│   └── timer.h          # CUDA Events 计时封装
-├── src/
-│   ├── phantom.cu
-│   ├── projector_cpu.cpp / projector_gpu.cu
-│   ├── filter_cpu.cpp   / filter_gpu.cu     # cuFFT
-│   ├── backprojector_cpu.cpp / backprojector_gpu.cu
-│   ├── io.cpp
-│   ├── metrics.cpp
-│   └── main.cpp         # CLI：--size --angles --det --mode cpu|gpu|both
+├── include/ct/              # 公共 API，按模块分目录
+│   ├── core/
+│   │   ├── geometry.h       # 坐标/几何约定（全项目共用）
+│   │   └── timer.h          # CUDA Events 计时封装
+│   ├── phantom/             # phantom.h（Shepp-Logan 体模生成）
+│   ├── projector/           # projector.h（前向投影：CPU/GPU）
+│   ├── filter/              # filter.h（Ramp 滤波：CPU/GPU）
+│   ├── backprojector/       # backprojector.h（反投影：CPU/GPU naive/texture）
+│   ├── metrics/             # metrics.h（RMSE / PSNR）
+│   ├── io/                  # io.h（PGM 读写）
+│   └── recon/               # 重建算法层：pipeline.h / sirt.h / graph.h
+├── src/                     # 实现，目录与 include/ct/ 一一对应
+│   ├── app/                 # main.cpp（CLI）、tour.cpp（知识点巡礼）
+│   ├── core/                # cuda_check.h、cuda_utils.cuh（内部工具头）
+│   ├── phantom/             # phantom.cu
+│   ├── projector/           # projector_cpu.cpp / projector_gpu.cu / projector_cdp.cu
+│   ├── filter/              # filter_cpu.cpp / filter_gpu.cu（cuFFT）
+│   ├── backprojector/       # backprojector_cpu.cpp / backprojector_gpu.cu
+│   ├── metrics/             # metrics.cpp / metrics_gpu.cu
+│   ├── io/                  # io.cpp
+│   └── recon/               # pipeline_gpu.cu / sirt_gpu.cu / graph_gpu.cu
 ├── tests/
-│   └── test_pipeline.cpp # GPU vs CPU 输出一致性（容差判断）
+│   └── test_pipeline.cpp    # GPU vs CPU 输出一致性（容差判断）
 └── docs/
-    └── results/          # 输出图像与性能表格（跑出来后提交）
+    └── results/             # 输出图像与性能表格（跑出来后提交）
 ```
 
 **kernel 设计一览**：

@@ -1,6 +1,6 @@
 // Shepp-Logan 体模生成（解析法，主机代码；编译为 .cu 与工程其余部分保持一致）
-#include "phantom.h"
-#include "geometry.h"
+#include "ct/phantom/phantom.h"
+#include "ct/core/geometry.h"
 
 #include <cmath>
 

@@ -1,6 +1,6 @@
 // CPU Ramp 滤波：自写迭代式 radix-2 复数 FFT（正/逆变换均不归一化，1/M 折叠进频响，
 // 与 GPU cuFFT 路径的数学完全一致）。
-#include "filter.h"
+#include "ct/filter/filter.h"
 
 #include <cmath>
 #include <complex>

@@ -1,17 +1,17 @@
 // ct_tour（阶段 9）：CUDA 知识点巡礼。
 // 小配置一键跑遍项目全部功能，打印「知识点 → CUDA API → 实测结果」对照表。
 // 只做演示与测量，不做断言（正确性断言在 test_pipeline）。
-#include "backprojector.h"
-#include "cuda_check.h"
-#include "filter.h"
-#include "geometry.h"
-#include "graph.h"
-#include "metrics.h"
-#include "phantom.h"
-#include "pipeline.h"
-#include "projector.h"
-#include "sirt.h"
-#include "timer.h"
+#include "core/cuda_check.h"
+#include "ct/backprojector/backprojector.h"
+#include "ct/core/geometry.h"
+#include "ct/core/timer.h"
+#include "ct/filter/filter.h"
+#include "ct/metrics/metrics.h"
+#include "ct/phantom/phantom.h"
+#include "ct/projector/projector.h"
+#include "ct/recon/graph.h"
+#include "ct/recon/pipeline.h"
+#include "ct/recon/sirt.h"
 
 #include <cstdarg>
 #include <cstdio>

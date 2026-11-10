@@ -1,7 +1,7 @@
 #pragma once
 
-#include "filter.h"
-#include "geometry.h"
+#include "ct/core/geometry.h"
+#include "ct/filter/filter.h"
 
 // ============================================================================
 // 阶段 9：CUDA Graphs —— 滤波 → 反投影链的捕获与重放。

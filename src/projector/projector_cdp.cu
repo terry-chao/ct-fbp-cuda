@@ -5,10 +5,10 @@
 // 动态并行的适用场景是"网格形状运行时才可知"的嵌套任务；本例的形状静态已知，
 // 因此预期不快于 v1（父 launch 开销 + tail-launch 串行屏障）——价值在于 API 用法
 // 与开销的实测认知，结论记录于 docs/results/RESULTS.md。
-// 编译要求：-rdc=true（CMake 中对本文件设 CUDA_RELOCATABLE_DEVICE_CODE）。
-#include "projector.h"
-#include "cuda_check.h"
-#include "cuda_utils.cuh"
+// 编译要求：-rdc=true（本文件单独编成 ct_cdp 库并开启 CUDA_SEPARABLE_COMPILATION）。
+#include "ct/projector/projector.h"
+#include "core/cuda_check.h"
+#include "core/cuda_utils.cuh"
 
 #include <cmath>
 

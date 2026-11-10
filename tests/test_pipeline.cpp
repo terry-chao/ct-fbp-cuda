@@ -8,17 +8,17 @@
 //   7. 前向投影变体一致性（阶段 7：warp/atomic/cdp vs v1，无设备时跳过）
 //   8. 异步流水线/多GPU 前向投影一致性（阶段 8，无设备时跳过）
 //   9. CUDA Graph 重放一致性（阶段 9，无设备时跳过）
-#include "backprojector.h"
-#include "cuda_check.h"
-#include "filter.h"
-#include "geometry.h"
-#include "graph.h"
-#include "io.h"
-#include "metrics.h"
-#include "phantom.h"
-#include "pipeline.h"
-#include "projector.h"
-#include "sirt.h"
+#include "core/cuda_check.h"
+#include "ct/backprojector/backprojector.h"
+#include "ct/core/geometry.h"
+#include "ct/filter/filter.h"
+#include "ct/io/io.h"
+#include "ct/metrics/metrics.h"
+#include "ct/phantom/phantom.h"
+#include "ct/projector/projector.h"
+#include "ct/recon/graph.h"
+#include "ct/recon/pipeline.h"
+#include "ct/recon/sirt.h"
 
 #include <cmath>
 #include <cstdio>

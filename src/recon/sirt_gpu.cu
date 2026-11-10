@@ -8,11 +8,11 @@
 // K×M 矩阵 B（B(k,m)=A(m,k)）。于是：
 //   p = A·x  (M 维) = Bᵀ·x → GemmEx(OP_T, m=M, k=K, lda=K)
 //   c = Aᵀ·r  (K 维) = B·r  → GemmEx(OP_N, m=K, k=M, lda=K)
-#include "sirt.h"
-#include "cuda_check.h"
+#include "ct/recon/sirt.h"
+#include "core/cuda_check.h"
 
-#include "metrics.h"
-#include "timer.h"
+#include "ct/core/timer.h"
+#include "ct/metrics/metrics.h"
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>

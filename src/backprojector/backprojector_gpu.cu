@@ -6,8 +6,8 @@
 // 引入的误差远小于重建本身的艺术差，换来的是免插值指令 + 缓存友好的访问路径。
 //
 // 三角函数表与 cudaArray/texture object 均静态缓存（按 n_angle / 源指针 失效重建）。
-#include "backprojector.h"
-#include "cuda_check.h"
+#include "ct/backprojector/backprojector.h"
+#include "core/cuda_check.h"
 
 #include <cmath>
 #include <vector>

@@ -1,5 +1,5 @@
 // CPU 前向投影参考实现：等距步进采样 + 双线性插值
-#include "projector.h"
+#include "ct/projector/projector.h"
 
 #include <cmath>
 
