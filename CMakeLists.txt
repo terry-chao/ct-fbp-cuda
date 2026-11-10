@@ -20,7 +20,7 @@ find_package(CUDAToolkit REQUIRED)
 
 # ---------------------------------------------------------------------------
 # 模块划分：公共 API 在 include/ct/<模块>/，实现在 src/<模块>/，每个模块一个静态库。
-#   core           坐标/几何约定、计时封装、CUDA 错误检查与共享设备函数（内部头 src/core/）
+#   core           坐标/几何约定、计时封装、CUDA 错误检查、输出编码适配（内部头 src/core/）
 #   phantom        Shepp-Logan 体模
 #   projector      前向投影（CPU / GPU v1 / warp / atomic / CDP）
 #   filter         Ramp 滤波（CPU / cuFFT）
@@ -63,6 +63,9 @@ target_link_libraries(ct_cdp PUBLIC CUDA::cudart)
 target_compile_options(ct_cdp PRIVATE ${CT_MSVC_COMPILE_OPTIONS})
 
 # --- 各功能模块 -------------------------------------------------------------
+# 共享运行时工具：控制台/管道输出编码适配（Windows 中文乱码）
+ct_add_module(ct_core src/core/console_io.cpp)
+
 ct_add_module(ct_io src/io/io.cpp)
 
 ct_add_module(ct_phantom src/phantom/phantom.cu)
@@ -104,6 +107,7 @@ target_link_libraries(ct_recon PUBLIC
 
 # 可执行文件统一链接的模块集合
 set(CT_APP_MODULES
+    ct_core
     ct_recon
     ct_projector
     ct_filter

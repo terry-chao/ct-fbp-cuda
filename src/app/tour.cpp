@@ -1,6 +1,7 @@
 // ct_tour（阶段 9）：CUDA 知识点巡礼。
 // 小配置一键跑遍项目全部功能，打印「知识点 → CUDA API → 实测结果」对照表。
 // 只做演示与测量，不做断言（正确性断言在 test_pipeline）。
+#include "core/console_io.h"
 #include "core/cuda_check.h"
 #include "ct/backprojector/backprojector.h"
 #include "ct/core/geometry.h"
@@ -17,12 +18,6 @@
 #include <cstdio>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>  // 控制台 UTF-8 输出（同 main.cpp）
-#endif
 
 namespace {
 
@@ -53,9 +48,7 @@ void row(const char* kp, const char* api, const std::string& result) {
 }  // namespace
 
 int main() {
-#ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-#endif
+    ct::initConsoleOutput();  // 必须早于任何输出（同 ct_fbp）
     Geometry g{};
     g.n = 128;
     g.n_det = 128;

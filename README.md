@@ -166,6 +166,21 @@ SIRT 模式另有 `recon_sirt.pgm` 与 `sirt_convergence.csv`（迭代曲线）�
 以及控制台的质量/性能报告和 `timings.csv`。
 PGM 可用 IrfanView/GIMP 等查看，或 `python tools/pgm2png.py xxx.pgm` 转 PNG。
 
+### 输出编码
+
+控制台输出会按宿主自动适配（实现见 `src/core/console_io.cpp`）：
+
+- 控制台（cmd / Windows Terminal）：用 `WriteConsoleW` 输出，不受当前代码页影响；
+- 管道 / 重定向文件（VS Code 调试控制台、CMake Tools 输出面板等）：把 UTF-8
+  转成系统 ANSI 代码页（中文 Windows 即 GBK）再写出，避免被按 ANSI 解码时出现
+  “閰嶇疆”式乱码；
+- 需要 UTF-8 字节（CI 日志、按 UTF-8 解析的脚本）时设 `CT_OUTPUT_ENCODING=utf8`：
+
+```bat
+set CT_OUTPUT_ENCODING=utf8
+build\ct_fbp.exe
+```
+
 ## 测试
 
 ```bat
@@ -297,7 +312,7 @@ ct-fbp-cuda/
 │   └── recon/               #   pipeline.h / sirt.h / graph.h（重建算法层）
 ├── src/                     # 实现，目录与 include/ct/ 一一对应
 │   ├── app/                 #   main.cpp（CLI 主程序）、tour.cpp（ct_tour：11 组知识点巡礼）
-│   ├── core/                #   cuda_check.h、cuda_utils.cuh（内部工具头，不对外）
+│   ├── core/                #   cuda_check.h、cuda_utils.cuh（内部工具头）、console_io.cpp（输出编码适配）
 │   ├── phantom/             #   phantom.cu
 │   ├── projector/           #   projector_cpu.cpp / projector_gpu.cu / projector_cdp.cu
 │   ├── filter/              #   filter_cpu.cpp / filter_gpu.cu

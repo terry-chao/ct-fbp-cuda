@@ -80,7 +80,7 @@ ct-fbp-cuda/
 │   └── recon/               # 重建算法层：pipeline.h / sirt.h / graph.h
 ├── src/                     # 实现，目录与 include/ct/ 一一对应
 │   ├── app/                 # main.cpp（CLI）、tour.cpp（知识点巡礼）
-│   ├── core/                # cuda_check.h、cuda_utils.cuh（内部工具头）
+│   ├── core/                # cuda_check.h、cuda_utils.cuh（内部工具头）、console_io.cpp（输出编码）
 │   ├── phantom/             # phantom.cu
 │   ├── projector/           # projector_cpu.cpp / projector_gpu.cu / projector_cdp.cu
 │   ├── filter/              # filter_cpu.cpp / filter_gpu.cu（cuFFT）

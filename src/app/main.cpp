@@ -1,6 +1,7 @@
 // CLI 与完整流水线编排：
 //   体模 → 前向投影 → Ramp 滤波 → 反投影 → 输出图像/指标/计时表
 // 用法见 usage()。--mode both 时逐阶段比对 GPU 与 CPU 结果。
+#include "core/console_io.h"
 #include "core/cuda_check.h"
 #include "ct/backprojector/backprojector.h"
 #include "ct/core/geometry.h"
@@ -21,12 +22,6 @@
 #include <functional>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX  // windows.h 的 min/max 宏会与下方 std::min/std::max 冲突
-#include <windows.h>  // SetConsoleOutputCP：中文 Windows 控制台默认 GBK，需切 UTF-8 才不乱码
-#endif
 
 namespace fs = std::filesystem;
 
@@ -187,11 +182,7 @@ static void reportQuality(const char* what, const float* phantom, const float* r
 }
 
 int main(int argc, char** argv) {
-#ifdef _WIN32
-    // 源码以 /utf-8 编译，输出即 UTF-8 字节；控制台默认按系统 ANSI 页（GBK）解码会乱码。
-    // 重定向到文件/管道时该调用无副作用，字节流仍为 UTF-8。
-    SetConsoleOutputCP(CP_UTF8);
-#endif
+    ct::initConsoleOutput();  // 必须早于任何输出：统一控制台/管道的编码处理
     Options o;
     if (!parseArgs(argc, argv, o)) return 1;
     const bool runCpu = (o.mode == "cpu" || o.mode == "both");
