@@ -356,8 +356,8 @@ static void testPipelineAndMultiGpu() {
     std::vector<float> got(g.sinoPixels());
     PipelineReport pr = forwardProjectGPUPipeline(d_img, g, d_sino, got.data(), 3);
     Metrics m1 = computeMetrics(ref.data(), got.data(), g.sinoPixels());
-    std::printf("    pipeline 3 流/%d 块: max_abs=%.3e (%.2f vs %.2f ms)\n", m1.max_abs,
-                pr.chunks, pr.pipelinedMs, pr.serialMs);
+    std::printf("    pipeline 3 流/%d 块: max_abs=%.3e (%.2f vs %.2f ms)\n", pr.chunks,
+                m1.max_abs, pr.pipelinedMs, pr.serialMs);
     CHECK(m1.max_abs < 1e-6f, "流水线 max_abs %.3e 超阈值", m1.max_abs);
 
     // 多 GPU（单卡机器上为 1 设备退化路径，代码路径相同）
