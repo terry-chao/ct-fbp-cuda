@@ -1,17 +1,29 @@
 # ct-fbp-cuda
 
 基于 CUDA 的 CT 图像**滤波反投影（FBP, Filtered BackProjection）**重建器：
-从模拟 X 光扫描到 GPU 加速重建的完整流水线，附 CPU 参考实现与性能对比。
+从模拟 X 光扫描到 GPU 加速重建的完整流水线，附 CPU 参考实现、迭代重建对照
+与逐项性能测量。
 
 ```text
  Shepp-Logan 体模 → 前向投影(Radon) → 正弦图 → Ramp 滤波 → 反投影 → 重建图像
-        │                │                          │            │
-      phantom.cu    projector_cpu / gpu        filter_cpu / gpu  backprojector_cpu / gpu(naive+texture)
+        │               │                        │           │
+      phantom.cu   projector_*.cu            filter_*.cu  backprojector_*.cu
+                   v1 / warp / atomic / cdp     cuFFT      naive / texture
+                   + 多流 / 多 GPU
+
+ 分支：SIRT 迭代重建（cuBLAS Tensor Core + Thrust + 统一内存）
+       CUDA Graphs：Ramp → 反投影整链捕获重放
 ```
 
-- **正确性可验证**：GPU 与 CPU 逐阶段比对（重建图逐点误差 ~1e-6），RMSE/PSNR 自动输出
-- **性能可量化**：512×512×360 配置下反投影加速 **~600×**（RTX 5070 vs 单线程 CPU）
-- **零第三方依赖**：图像 IO 为自写 PGM 读写，FFT 为 cuFFT(GPU) / 自写 radix-2(CPU)
+- **正确性可验证**：GPU 与 CPU 逐阶段比对（重建图逐点误差 ~1e-6），RMSE/PSNR 自动输出；
+  9 组测试覆盖坐标约定、定标、变体一致性、图重放一致性
+- **性能可量化**：512×512×360 下反投影加速 **~580×**（RTX 5070 vs 单线程 CPU）；
+  少角度 SIRT 比 FBP 的 RMSE 低 35%
+- **知识点全覆盖**：朴素 kernel / 纹理内存 / warp 归约 / 原子操作 / 动态并行 /
+  cuFFT / cuBLAS Tensor Core / Thrust / 统一内存 / 多流 + 锁页 / 多 GPU / CUDA Graphs，
+  每条都有实测数据（见 [`ct_tour`](#cuda-知识点全景)）
+- **零第三方依赖**：除 CUDA Toolkit（cuFFT / cuBLAS / Thrust 随包提供）外无外部库；
+  图像 IO 为自写 PGM 读写，CPU FFT 为自写 radix-2
 
 ## 原理速览
 
@@ -25,6 +37,10 @@ s = x₀cosθ + y₀sinθ 的正弦轨迹）。
 **反投影**：输出图像每个像素 (x,y) 对所有角度计算 s = x·cosθ + y·sinθ，去该角度
 的投影行里**线性插值**查 s 处的值，累加后乘 Δθ。查值插值正是 GPU 优化的核心：
 texture memory 的硬件双线性插值可以把两次全局读 + 插值指令压成一条 `tex2D`。
+
+**SIRT 迭代重建**（阶段 6）：把成像写成线性方程组 b = A·x（A 的每行 = 一条射线
+穿过图像的双线性权重），用最速下降型 SIRT 迭代求解。少角度时 FBP 的条纹伪影
+被迭代正则化压下去，代价是几十到几百倍的计算量。
 
 参考：Kak & Slaney, *Principles of Computerized Tomographic Imaging*, Ch.3（[官方免费 PDF](https://www.slaney.org/pct/pct-toc.html)）。
 
@@ -43,7 +59,8 @@ texture memory 的硬件双线性插值可以把两次全局读 + 插值指令�
 ```
 
 前向/反向使用同一 s = x·cosθ + y·sinθ，自洽；单椭圆正弦轨迹测试
-（`tests/test_pipeline.cpp`）锁定这套约定不被改坏。
+（`tests/test_pipeline.cpp`）锁定这套约定不被改坏。SIRT 的系统矩阵用同一套
+采样公式构建，因此 `A·x` 与 GPU 前向投影逐点自洽。
 
 ## 构建（Windows）
 
@@ -68,6 +85,9 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
+产出三个可执行文件：`ct_fbp.exe`（主流水线）、`ct_tour.exe`（知识点巡礼）、
+`test_pipeline.exe`（测试）。
+
 > **注意**：nvcc（≤13.1）只支持 MSVC 2019~2022（19.2x~19.4x）作为 host 编译器。
 > 若默认工具集是 VS2026 的 19.51（如本开发机），用 `-vcvars_ver=14.44` 固定到
 > 已装的 VS2022 时代工具集即可。若用 VS 生成器打开 `.sln`，还需在 VS 安装器里
@@ -75,6 +95,9 @@ cmake --build build
 
 目标架构默认 `sm_120`（RTX 50 系）；其他显卡用
 `-DCMAKE_CUDA_ARCHITECTURES=86`（30 系）/`89`（40 系）等覆盖。
+
+阶段 7 的动态并行（CDP2）需要 `-rdc=true` 与设备符号解析，CMakeLists 已按
+源文件设置，无需手工干预。
 
 ## 用法
 
@@ -84,6 +107,26 @@ build\ct_fbp.exe --size 1024 --angles 720 --det 1024
 build\ct_fbp.exe --mode cpu                   :: 只跑 CPU
 build\ct_fbp.exe --filter hamming             :: Hamming 窗对比
 build\ct_fbp.exe --out docs/results           :: 指定输出目录
+
+:: 阶段 6：SIRT 迭代重建（少角度小配置；稠密矩阵受显存限制）
+build\ct_fbp.exe --size 128 --det 128 --angles 16 --recon sirt --iters 60 --relax 1.0
+build\ct_fbp.exe --size 128 --det 128 --angles 64 --recon sirt --iters 200 --matrix fp16
+build\ct_fbp.exe --size 128 --det 128 --angles 16 --recon sirt --alloc managed
+
+:: 阶段 7：前向投影变体（v1 / warp 归约 / 原子散射 / 动态并行）
+build\ct_fbp.exe --mode gpu --forward warp
+build\ct_fbp.exe --mode gpu --forward atomic
+build\ct_fbp.exe --mode gpu --forward cdp
+
+:: 阶段 8：多流异步流水线 / 多 GPU
+build\ct_fbp.exe --mode gpu --streams 4
+build\ct_fbp.exe --mode gpu --mgpu
+
+:: 阶段 9：CUDA Graphs 重放基准
+build\ct_fbp.exe --mode gpu --graph
+
+:: 知识点巡礼：128×128×32 小配置一次跑完 11 组功能
+build\ct_tour.exe
 ```
 
 | 选项 | 默认 | 说明 |
@@ -96,9 +139,19 @@ build\ct_fbp.exe --out docs/results           :: 指定输出目录
 | `--warmup W` | 3 | GPU 计时前预热次数 |
 | `--runs R` | 5 | 计时重复次数取平均 |
 | `--out DIR` | output | 输出目录 |
+| `--recon R` | fbp | `fbp` / `sirt`（sirt 需 GPU，且 size/det/angles ≤ 128 量级） |
+| `--iters N` | 60 | SIRT 迭代次数 |
+| `--relax X` | 1.0 | SIRT 松弛因子 λ（须 < 2） |
+| `--matrix M` | fp16 | SIRT 系统矩阵：`fp32`（TF32）/ `fp16`（Tensor Core） |
+| `--alloc A` | device | SIRT 内存：`device` / `managed`（统一内存） |
+| `--forward V` | v1 | 前向投影：`v1` / `warp` / `atomic` / `cdp` |
+| `--streams K` | 0 | K > 0 时按角度分块跑 K 流异步流水 |
+| `--mgpu` | 关 | 前向投影按角度切分到所有 GPU |
+| `--graph` | 关 | 滤波→反投影链捕获为 CUDA Graph 重放 |
 
 输出：`phantom.pgm`、`sinogram.pgm`、`sinogram_filtered.pgm`、
-`recon_cpu.pgm`、`recon_gpu.pgm`、`recon_gpu_texture.pgm`（重建图统一灰阶），
+`recon_cpu.pgm`、`recon_gpu.pgm`、`recon_gpu_texture.pgm`，
+SIRT 模式另有 `recon_sirt.pgm` 与 `sirt_convergence.csv`（迭代曲线），
 以及控制台的质量/性能报告和 `timings.csv`。
 PGM 可用 IrfanView/GIMP 等查看，或 `python tools/pgm2png.py xxx.pgm` 转 PNG。
 
@@ -108,18 +161,30 @@ PGM 可用 IrfanView/GIMP 等查看，或 `python tools/pgm2png.py xxx.pgm` 转 
 build\test_pipeline.exe       :: 或 cmake --build build --target test
 ```
 
-覆盖：PGM 读写往返、单椭圆正弦轨迹（坐标约定）、中心圆盘 FBP 定标
-（重建值 ≈ 1）、Shepp-Logan CPU 全流程 RMSE、GPU vs CPU 逐阶段一致性。
+9 组测试（无 CUDA 设备时 GPU 部分自动跳过）：
+
+1. PGM 读写往返
+2. 单椭圆正弦轨迹（坐标约定）
+3. 中心圆盘 FBP 定标（重建值 ≈ 1）
+4. Shepp-Logan CPU 全流程 RMSE
+5. GPU vs CPU 逐阶段一致性
+6. SIRT：少角度优于 FBP、fp16 vs fp32、统一内存、GPU 指标 vs CPU 指标
+7. 前向投影变体（warp/atomic/cdp）与 v1 一致
+8. 异步流水线 / 多 GPU 与串行 v1 一致
+9. CUDA Graph 重放与手动链一致（naive 与 texture 两条链）
 
 ## 结果（RTX 5070 / CUDA 13.1）
 
-完整数据见 [docs/results/RESULTS.md](docs/results/RESULTS.md)。
+完整数据、复现命令与负结果分析见 [docs/results/RESULTS.md](docs/results/RESULTS.md)。
 
-| 配置 | 阶段 | CPU (ms) | GPU naive (ms) | 加速比 | GPU texture (ms) |
-|---|---|---|---|---|---|
-| 512×512×360 | 前向投影 | 584.6 | 0.99 | 591× | — |
-| 512×512×360 | Ramp 滤波 | 33.1 | 0.05 | 672× | — |
-| 512×512×360 | 反投影 | 193.8 | 0.32 | **600×** | 0.25 |
+### FBP 流水线（512×512×360）
+
+| 阶段 | CPU (ms) | GPU (ms) | 加速比 |
+|---|---|---|---|
+| 前向投影 v1 | 599.28 | 1.03 | 581× |
+| Ramp 滤波 | 33.94 | 0.05 | 637× |
+| 反投影 naive | 188.16 | 0.32 | **583×** |
+| 反投影 texture | — | 0.25 | −22%（相对 naive） |
 
 | 配置 | RMSE | PSNR |
 |---|---|---|
@@ -127,18 +192,65 @@ build\test_pipeline.exe       :: 或 cmake --build build --target test
 | 512×512×360 | 0.0334 | 29.69 dB |
 | 1024×1024×720 | 0.0250 | 32.21 dB |
 
+### SIRT vs FBP（128×128，fp16 矩阵，λ=1.0）
+
+| 角度 | 射线数 | FBP RMSE | SIRT 60 迭代 | SIRT 200 迭代 |
+|---|---|---|---|---|
+| 16 | 2048 | 0.2178 | **0.1425** | 0.1420 |
+| 32 | 4096 | 0.1214 | **0.1080** | 0.1040 |
+| 64 | 8192 | 0.0706 | 0.0888（未收敛） | **0.0664** |
+
+角度越少 SIRT 优势越大（16 角度 −35%）；64 角度需 200 次迭代才反超 FBP。
+单次迭代 0.5~1.3 ms，16 角度系统矩阵约 192 MiB（64 角度 768 MiB）。
+
 | 体模 | 正弦图 | 重建（窄窗口） |
 |---|---|---|
 | ![phantom](docs/results/phantom.png) | ![sinogram](docs/results/sinogram.png) | ![recon](docs/results/recon_cpu_windowed.png) |
 
+| 16 角度 FBP vs SIRT |
+|---|
+| ![sirt vs fbp](docs/results/sirt_vs_fbp_16ang.png) |
+
+## CUDA 知识点全景
+
+`ct_tour.exe` 在 128×128×32 配置上一键跑完全部功能，打印「知识点 → API → 实测」。
+下表为 5 次运行的中位数（完整表见 [RESULTS.md §9](docs/results/RESULTS.md)）：
+
+| # | 知识点 | 关键 API | 实测 |
+|---|---|---|---|
+| 1 | kernel 基础 / 线程映射 | `<<<grid, block>>>`、`__restrict__` | 0.042 ms / 前向投影 |
+| 2 | 官方库调用 | `cufftPlanMany`、`cufftExecC2C` | 0.036 ms / 滤波 |
+| 3 | 纹理内存 / 硬件双线性 | `cudaCreateTextureObject`、`tex2D` | 0.016 vs 0.009 ms（小图反而慢） |
+| 4 | warp 原语 + 共享内存 | `__shfl_down_sync`、`__shared__`、`__syncthreads` | 0.022 ms，diff 1.8e-7 |
+| 5 | 原子操作 | `atomicAdd` | 0.022 ms，diff 1.8e-7 |
+| 6 | 动态并行（CDP2） | `cudaStreamTailLaunch`（`-rdc`） | 1.29 ms（31× 开销） |
+| 7 | cuBLAS Tensor Core + Thrust | `cublasGemmEx`、`thrust::transform` | RMSE 0.106，0.99 ms/迭代 |
+| 8 | 统一内存 | `cudaMallocManaged`、`cudaMemPrefetchAsync` | 与 device 结果一致 |
+| 9 | 流 + 异步拷贝 + 锁页 | `cudaStream*`、`cudaMemcpyAsync`、`cudaMallocHost` | 0.24 vs 0.07 ms（小图开销） |
+| 10 | 多 GPU | `cudaMemcpyPeerAsync`、`cudaDeviceCanAccessPeer` | 0.10 ms，1 设备退化 |
+| 11 | CUDA Graphs | stream capture → instantiate → launch | 0.018 vs 0.058 ms（3.2×） |
+
+收益随规模变化，报告保留"不赢"的配置：纹理内存在 512 以上 −22%，128 上反而慢；
+warp/atomic 变体只在欠占用的小配置赢（128 上 1.9×，512 上慢 1.8~2.1×）；
+CUDA Graphs 只在 launch-bound 的小配置赢（3~5×，512 上仅 5~9%）；多流流水线在
+当前单 kernel 链上不划算（512 中位 +23%，1024 无稳定收益），是"重 kernel / 大传输"
+场景的基础设施。这些负结果与正向加速比一起构成优化的边界说明。
+
 ## 实现说明
 
-| Kernel | 线程映射 | 要点 |
+| Kernel / 模块 | 线程映射 | 要点 |
 |---|---|---|
-| 前向投影 | 1 线程 = 1 (角度, 探测器) | 等距步进采样 + 双线性插值；积分范围按外接圆 \|t\| ≤ √(2−s²) 截断省 ~35% 空步 |
-| Ramp 滤波 | 1 线程 = 1 补零元素 / 频域元素 | cuFFT 批量 1D C2C；plan/频响/缓冲按几何缓存，重复调用零额外开销 |
+| 前向投影 v1 | 1 线程 = 1 (角度, 探测器) | 等距步进采样 + 双线性插值；积分范围按外接圆 \|t\| ≤ √(2−s²) 截断省 ~35% 空步 |
+| 前向投影 warp | 1 block = 1 射线（256 线程） | 线程交错采样 → `__shfl_down_sync` + `__shared__` 两级归约 |
+| 前向投影 atomic | 1 线程 = 1 (射线, 32 样本块) | `atomicAdd` 直接累加，同地址串行化是代价样本 |
+| 前向投影 cdp | 父 kernel 按角度 launch 子 kernel | CDP2 + `cudaStreamTailLaunch`，演示嵌套 launch 开销 |
+| Ramp 滤波 | 1 线程 = 1 补零元素 / 频域元素 | cuFFT 批量 1D C2C；plan/频响/缓冲按几何缓存 |
 | 反投影 v1 naive | 1 线程 = 1 像素 (16×16 block) | cos/sin 预计算查表，手写线性插值，出界取 0 |
 | 反投影 v2 texture | 同上 | 正弦图驻留 cudaArray，`tex2D` 硬件双线性插值 |
+| SIRT | cuBLAS gemv（以 gemm n=1 实现） | `cublasGemmEx` + Tensor Core（TF32 / FP16）；Thrust 做向量步骤；行/列归一化预计算 |
+| 多流流水线 | K 流 × 角度块 | `cudaMemcpyAsync` + `cudaMallocHost` 锁页缓冲，块间重叠 |
+| 多 GPU | 按角度切分设备 | peer 可达时 `cudaMemcpyPeerAsync` 汇聚到 0 号卡，否则各卡 D2H |
+| CUDA Graphs | 整链 1 次 launch | capture 前热身（cuFFT plan / 纹理对象不可在捕获区分配），exec 按键缓存 |
 
 细节：
 
@@ -146,8 +258,8 @@ build\test_pipeline.exe       :: 或 cmake --build build --target test
   cuFFT 均不带归一化，两侧数学完全一致（滤波后正弦图误差 ~1e-6·量级）。
 - **texture 插值量化**：硬件线性过滤的小数权重按 1/512 步长量化，对重建图引入
   ~1e-4 的 RMSE，肉眼不可分辨；换来纹理缓存命中 + 免插值指令，512 配置快 ~22%。
-- **缓存策略**：三角函数表、cudaArray/texture object、cuFFT plan 均按几何/源指针
-  静态缓存，计时循环内无重复分配；texture 版每次调用含一次 D2D 拷贝（0.7 MB，计入计时）。
+- **缓存策略**：三角函数表、cudaArray/texture object、cuFFT plan、SIRT 系统矩阵、
+  Graph exec 均按键（几何/窗口/精度/源指针）缓存，计时循环内无重复分配。
 - **计时口径**：CUDA Events 只含设备端计算，H2D/D2H 拷贝在计时区外；CPU 为
   `std::chrono` 单线程。
 
@@ -158,15 +270,26 @@ ct-fbp-cuda/
 ├── CMakeLists.txt
 ├── scripts/build.bat        # Windows 一键构建（vcvars + Ninja）
 ├── tools/pgm2png.py         # PGM→PNG 显示辅助（需 Pillow）
-├── include/                 # 公共 API：geometry/phantom/projector/filter/backprojector/io/metrics/timer
-├── src/                     # 实现：CPU 参考版 + GPU kernels（.cu）
-├── tests/test_pipeline.cpp  # 零依赖一致性测试
-└── docs/results/            # 输出图像 + 质量性能报告
+├── include/                 # 公共 API：geometry/phantom/projector/filter/backprojector/
+│                            #   sirt/graph/pipeline/io/metrics/timer
+├── src/                     # 实现：CPU 参考版 + GPU kernels
+│   ├── projector_cpu.cpp / projector_gpu.cu / projector_cdp.cu
+│   ├── filter_cpu.cpp / filter_gpu.cu
+│   ├── backprojector_cpu.cpp / backprojector_gpu.cu
+│   ├── sirt_gpu.cu          # 阶段 6：cuBLAS + Thrust + 统一内存
+│   ├── pipeline_gpu.cu      # 阶段 8：多流 / 多 GPU
+│   ├── graph_gpu.cu         # 阶段 9：CUDA Graphs
+│   ├── main.cpp             # CLI 主程序
+│   └── tour.cpp             # ct_tour：11 组知识点巡礼
+├── tests/test_pipeline.cpp  # 零依赖测试（9 组）
+├── plan/PLAN.md             # 阶段计划与验收标准
+└── docs/results/            # 输出图像 + 质量性能报告（RESULTS.md）
 ```
 
 ## 扩展路线
 
-- **扇束 FBP**：点光源几何 + cos³ 权重（等距重排或直接扇束公式）
-- **迭代重建（SIRT/ART）**：少角度场景质量优于 FBP，投影/反投影 kernel 可直接复用
+- **扇束 FBP**：点光源几何 + cos³ 权重（等距重排或直接扇束公式）——阶段 5，本仓库未实现
 - **Siddon 精确前向投影**：替代等距采样，消除采样步长依赖
-- **多 GPU / 流水线重叠**：滤波与反投影用 CUDA stream 重叠
+- **稀疏 / on-the-fly SIRT**：不落盘稠密 A，用 kernel 现算 A·x 与 Aᵀ·r，突破 128×128 限制
+- **真多卡**：≥2 卡上复测 peer 汇聚与负载切分（当前只验证了单卡退化路径）
+- **Nsight Compute 剖析**：合并访问、占用率、纹理命中率的量化截图
