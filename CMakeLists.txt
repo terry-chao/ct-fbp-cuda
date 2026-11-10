@@ -23,6 +23,7 @@ add_library(ct_core STATIC
     src/phantom.cu
     src/projector_cpu.cpp
     src/projector_gpu.cu
+    src/projector_cdp.cu
     src/filter_cpu.cpp
     src/filter_gpu.cu
     src/backprojector_cpu.cpp
@@ -34,6 +35,11 @@ add_library(ct_core STATIC
 target_include_directories(ct_core PUBLIC include)
 # thrust 为纯头文件库（位于 CUDA 工具包 include 目录，经 cudart 的接口路径引入）
 target_link_libraries(ct_core PUBLIC CUDA::cudart CUDA::cufft CUDA::cublas)
+
+# 阶段 7：动态并行（CDP2）需要可重定位设备代码（-rdc，逐源文件）+
+# 消费者链接时解析设备符号（静态库 device link 步骤）
+set_source_files_properties(src/projector_cdp.cu PROPERTIES COMPILE_OPTIONS "-rdc=true")
+set_target_properties(ct_core PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
 # MSVC 源文件默认编码（含中文注释的文件需要 /utf-8，避免 C4819 告警）
 target_compile_options(ct_core PRIVATE

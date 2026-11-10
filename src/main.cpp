@@ -42,6 +42,7 @@ struct Options {
     double relax = 1.0;            // SIRT 松弛因子 λ（收敛稳定性要求 λ < 2）
     std::string alloc = "device";  // device | managed（统一内存）
     std::string matrix = "fp16";   // fp32(TF32) | fp16(Tensor Core)
+    std::string forward = "v1";    // v1 | warp | atomic | cdp（阶段 7 变体）
 };
 
 static void usage(const char* prog) {
@@ -87,6 +88,7 @@ static bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--relax") o.relax = std::atof(next("--relax").c_str());
         else if (a == "--matrix") o.matrix = next("--matrix");
         else if (a == "--alloc") o.alloc = next("--alloc");
+        else if (a == "--forward") o.forward = next("--forward");
         else if (a == "--help" || a == "-h") { usage(argv[0]); std::exit(0); }
         else {
             std::fprintf(stderr, "错误: 未知选项 '%s'\n\n", a.c_str());
@@ -154,7 +156,7 @@ float timeGpuMs(F&& fn, int warmup, int runs) {
 }
 
 struct StageTiming {
-    const char* name;
+    std::string name;
     double cpu_ms = -1.0;
     double gpu_ms = -1.0;
 };
@@ -212,7 +214,7 @@ int main(int argc, char** argv) {
 
     std::vector<float> sinoC, filtC, reconC;       // CPU 结果
     std::vector<float> sinoG, filtG, reconGN, reconGT;  // GPU 结果
-    std::vector<StageTiming> stages = {{"前向投影"}, {"Ramp 滤波"}, {"反投影 naive"}, {"反投影 texture"}};
+    std::vector<StageTiming> stages = {{"前向投影 v1"}, {"Ramp 滤波"}, {"反投影 naive"}, {"反投影 texture"}};
 
     // ---- CPU 参考流水线 ------------------------------------------------------
     if (runCpu) {
@@ -247,7 +249,15 @@ int main(int argc, char** argv) {
         reconGN.resize(o.g.imagePixels());
         reconGT.resize(o.g.imagePixels());
 
-        stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPU(d_img, o.g, d_sino); }, o.warmup, o.runs);
+        stages[0].name = "前向投影 " + o.forward;
+        if (o.forward == "v1")
+            stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPU(d_img, o.g, d_sino); }, o.warmup, o.runs);
+        else if (o.forward == "warp")
+            stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPUWarp(d_img, o.g, d_sino); }, o.warmup, o.runs);
+        else if (o.forward == "atomic")
+            stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPUAtomic(d_img, o.g, d_sino); }, o.warmup, o.runs);
+        else
+            stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPUCdp(d_img, o.g, d_sino); }, o.warmup, o.runs);
         CT_CUDA_CHECK(cudaMemcpy(sinoG.data(), d_sino, sizeof(float) * o.g.sinoPixels(),
                                   cudaMemcpyDeviceToHost));
         stages[1].gpu_ms = timeGpuMs([&] { rampFilterGPU(d_sino, o.g, o.win, d_filt); }, o.warmup, o.runs);
@@ -382,11 +392,11 @@ int main(int argc, char** argv) {
         double speedup = (s.cpu_ms > 0 && s.gpu_ms > 0) ? s.cpu_ms / s.gpu_ms : 0.0;
         std::string sp = speedup > 0 ? std::to_string(speedup) + "x" : "-";
         if (s.cpu_ms >= 0 && s.gpu_ms >= 0)
-            std::printf("%-16s %12.2f %12.2f %9.1fx\n", s.name, s.cpu_ms, s.gpu_ms, speedup);
+            std::printf("%-16s %12.2f %12.2f %9.1fx\n", s.name.c_str(), s.cpu_ms, s.gpu_ms, speedup);
         else if (s.cpu_ms >= 0)
-            std::printf("%-16s %12.2f %12s %10s\n", s.name, s.cpu_ms, "-", "-");
+            std::printf("%-16s %12.2f %12s %10s\n", s.name.c_str(), s.cpu_ms, "-", "-");
         else
-            std::printf("%-16s %12s %12.2f %10s\n", s.name, "-", s.gpu_ms, "-");
+            std::printf("%-16s %12s %12.2f %10s\n", s.name.c_str(), "-", s.gpu_ms, "-");
     }
 
     // ---- 落盘：计时 CSV -------------------------------------------------------
@@ -396,7 +406,7 @@ int main(int argc, char** argv) {
             std::fprintf(f, "stage,cpu_ms,gpu_ms,speedup\n");
             for (const StageTiming& s : stages) {
                 double sp = (s.cpu_ms > 0 && s.gpu_ms > 0) ? s.cpu_ms / s.gpu_ms : 0.0;
-                std::fprintf(f, "%s,%.4f,%.4f,%.2f\n", s.name,
+                std::fprintf(f, "%s,%.4f,%.4f,%.2f\n", s.name.c_str(),
                              s.cpu_ms >= 0 ? s.cpu_ms : -1.0, s.gpu_ms >= 0 ? s.gpu_ms : -1.0, sp);
             }
             std::fclose(f);

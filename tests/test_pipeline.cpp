@@ -5,6 +5,7 @@
 //   4. Shepp-Logan CPU 全流程 RMSE
 //   5. GPU vs CPU 逐阶段一致性（无 CUDA 设备时跳过）
 //   6. SIRT 迭代重建 + GPU 指标（阶段 6：cuBLAS/Thrust/统一内存，无设备时跳过）
+//   7. 前向投影变体一致性（阶段 7：warp/atomic/cdp vs v1，无设备时跳过）
 #include "backprojector.h"
 #include "cuda_check.h"
 #include "filter.h"
@@ -283,6 +284,47 @@ static void testSirtReconstruction() {
     sirtReleaseCache();
 }
 
+// 阶段 7：前向投影三种并行变体（warp 协作归约 / 原子散射 / 动态并行）与 v1 一致
+static void testForwardVariantsMatch() {
+    std::printf("[test] 前向投影变体一致性（warp/atomic/cdp vs v1）\n");
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess || count == 0) {
+        std::printf("    (跳过: 无可用 CUDA 设备)\n");
+        return;
+    }
+
+    Geometry g{};
+    g.n = 128;
+    g.n_det = 128;
+    g.n_angle = 90;
+    std::vector<float> phantom = makeSheppLogan(g.n);
+
+    float *d_img, *d_sino[4];
+    CT_CUDA_CHECK(cudaMalloc(&d_img, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMemcpy(d_img, phantom.data(), sizeof(float) * g.imagePixels(), cudaMemcpyHostToDevice));
+    for (auto& p : d_sino) CT_CUDA_CHECK(cudaMalloc(&p, sizeof(float) * g.sinoPixels()));
+
+    forwardProjectGPU(d_img, g, d_sino[0]);
+    forwardProjectGPUWarp(d_img, g, d_sino[1]);
+    forwardProjectGPUAtomic(d_img, g, d_sino[2]);
+    forwardProjectGPUCdp(d_img, g, d_sino[3]);
+
+    std::vector<float> ref(g.sinoPixels()), got(g.sinoPixels());
+    CT_CUDA_CHECK(cudaMemcpy(ref.data(), d_sino[0], sizeof(float) * g.sinoPixels(), cudaMemcpyDeviceToHost));
+    const char* names[3] = {"warp", "atomic", "cdp"};
+    for (int v = 1; v < 4; ++v) {
+        CT_CUDA_CHECK(cudaMemcpy(got.data(), d_sino[v], sizeof(float) * g.sinoPixels(), cudaMemcpyDeviceToHost));
+        Metrics m = computeMetrics(ref.data(), got.data(), g.sinoPixels());
+        std::printf("    %-8s max_abs=%.3e rmse=%.3e\n", names[v - 1], m.max_abs, m.rmse);
+        // 求和顺序/样本定位（双精度索引 vs 逐次 += 漂移）差异的量级上限
+        CHECK(m.max_abs < 1e-3f, "%s 变体 max_abs %.3e 超阈值", names[v - 1], m.max_abs);
+    }
+
+    CT_CUDA_CHECK(cudaFree(d_img));
+    for (auto& p : d_sino) CT_CUDA_CHECK(cudaFree(p));
+}
+
 int main() {
     testPGMRoundTrip();
     testSingleEllipseSinogram();
@@ -290,6 +332,7 @@ int main() {
     testSheppLoganCPU();
     testGpuMatchesCpu();
     testSirtReconstruction();
+    testForwardVariantsMatch();
 
     if (g_failures == 0) {
         std::printf("\n全部测试通过 ✔\n");

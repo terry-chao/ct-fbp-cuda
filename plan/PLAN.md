@@ -142,10 +142,10 @@ ct-fbp-cuda/
 - **验收**：少角度（16 角度，128×128）SIRT RMSE 显著优于 FBP（实测 0.142 vs 0.218）；
   fp16 与 fp32 结果 RMSE 差 < 5e-3；managed 与 device 结果一致；GPU 指标 = CPU 指标
 
-### 阶段 7：前向投影并行变体（warp/atomic/CDP）—— 知识点扩展
-- [ ] warp 协作版：1 block = 1 射线，`__shfl_down_sync` + `__shared__` + `__syncthreads` 归约
-- [ ] 原子散射版：线程 = 射线分段，`atomicAdd` 直接累加（与归约版对比）
-- [ ] 动态并行版（CDP2）：父 kernel 按角度 launch 子 kernel（`cudaStreamTailLaunch`，-rdc）
+### 阶段 7：前向投影并行变体（warp/atomic/CDP）—— 已完成
+- [x] warp 协作版：1 block = 1 射线，`__shfl_down_sync` + `__shared__` + `__syncthreads` 归约
+- [x] 原子散射版：线程 = 射线分段，`atomicAdd` 直接累加（与归约版对比）
+- [x] 动态并行版（CDP2）：父 kernel 按角度 launch 子 kernel（`cudaStreamTailLaunch`，-rdc）
 - **验收**：三变体正弦图与 naive 版 max_abs < 1e-4；RESULTS 给出四版性能对比与结论
 
 ### 阶段 8：异步流水线与多 GPU（streams/pinned/mgpu）
