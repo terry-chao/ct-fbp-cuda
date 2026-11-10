@@ -1,3 +1,7 @@
+# Build
+build/
+build-*/
+output/
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
