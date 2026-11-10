@@ -19,6 +19,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX  // windows.h 的 min/max 宏会与下方 std::min/std::max 冲突
+#include <windows.h>  // SetConsoleOutputCP：中文 Windows 控制台默认 GBK，需切 UTF-8 才不乱码
+#endif
+
 namespace fs = std::filesystem;
 
 struct Options {
@@ -135,6 +141,11 @@ static void reportQuality(const char* what, const float* phantom, const float* r
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // 源码以 /utf-8 编译，输出即 UTF-8 字节；控制台默认按系统 ANSI 页（GBK）解码会乱码。
+    // 重定向到文件/管道时该调用无副作用，字节流仍为 UTF-8。
+    SetConsoleOutputCP(CP_UTF8);
+#endif
     Options o;
     if (!parseArgs(argc, argv, o)) return 1;
     const bool runCpu = (o.mode == "cpu" || o.mode == "both");
