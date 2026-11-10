@@ -28,9 +28,12 @@ add_library(ct_core STATIC
     src/backprojector_cpu.cpp
     src/backprojector_gpu.cu
     src/io.cpp
-    src/metrics.cpp)
+    src/metrics.cpp
+    src/metrics_gpu.cu
+    src/sirt_gpu.cu)
 target_include_directories(ct_core PUBLIC include)
-target_link_libraries(ct_core PUBLIC CUDA::cudart CUDA::cufft)
+# thrust 为纯头文件库（位于 CUDA 工具包 include 目录，经 cudart 的接口路径引入）
+target_link_libraries(ct_core PUBLIC CUDA::cudart CUDA::cufft CUDA::cublas)
 
 # MSVC 源文件默认编码（含中文注释的文件需要 /utf-8，避免 C4819 告警）
 target_compile_options(ct_core PRIVATE

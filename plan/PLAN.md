@@ -132,9 +132,32 @@ ct-fbp-cuda/
 - [ ] 扇束 FBP（cos³ 权重 + 等距重排 or 直接扇束公式）
 - **验收**：扇束几何下重建成功，README 增加扇束小节
 
-### 阶段 6：迭代重建对比（可选，长期）
-- [ ] SIRT 迭代重建（投影/反投影反复迭代）
-- **验收**：少角度（如 45 个角度）场景下 SIRT 质量优于 FBP，展示"GPU 让迭代法变得可行"
+### 阶段 6：迭代重建对比（可选，长期）—— 已完成（cuBLAS/Thrust/统一内存）
+- [x] SIRT 迭代重建：稠密系统矩阵 A（射线双线性权重，与前向投影采样自洽）
+- [x] cuBLAS GemmEx 两种 Tensor Core 路径：fp32+TF32（`CUBLAS_COMPUTE_32F_FAST_TF32`）、
+      fp16 矩阵（A/B/C 16F + 32F 累加，显存减半）
+- [x] Thrust 设备端迭代步骤（transform/inner_product/for_each+zip）；`computeMetricsGPU`
+- [x] 统一内存模式（`--alloc managed`，WDDM 下 prefetch 自动禁用）
+- [x] CLI：`--recon sirt --iters N --relax X --matrix fp32|fp16 --alloc device|managed`
+- **验收**：少角度（16 角度，128×128）SIRT RMSE 显著优于 FBP（实测 0.142 vs 0.218）；
+  fp16 与 fp32 结果 RMSE 差 < 5e-3；managed 与 device 结果一致；GPU 指标 = CPU 指标
+
+### 阶段 7：前向投影并行变体（warp/atomic/CDP）—— 知识点扩展
+- [ ] warp 协作版：1 block = 1 射线，`__shfl_down_sync` + `__shared__` + `__syncthreads` 归约
+- [ ] 原子散射版：线程 = 射线分段，`atomicAdd` 直接累加（与归约版对比）
+- [ ] 动态并行版（CDP2）：父 kernel 按角度 launch 子 kernel（`cudaStreamTailLaunch`，-rdc）
+- **验收**：三变体正弦图与 naive 版 max_abs < 1e-4；RESULTS 给出四版性能对比与结论
+
+### 阶段 8：异步流水线与多 GPU（streams/pinned/mgpu）
+- [ ] 现有 GPU 阶段函数加 `cudaStream_t` 参数（默认 nullptr 保持原行为）
+- [ ] 前向投影分角度块多流流水线：K 流 + `cudaMemcpyAsync` + `cudaMallocHost` 双缓冲
+- [ ] 多 GPU 版：按角度切分设备，peer copy 或各自 D2H（单卡退化为分块，如实记录）
+- **验收**：流水线正弦图 == 串行（< 1e-6）；RESULTS 记录重叠收益/开销
+
+### 阶段 9：CUDA Graphs + 知识点巡礼
+- [ ] 滤波→反投影链 stream capture → instantiate → replay，量化 launch 开销
+- [ ] `ct_tour` 二进制：小配置一键跑全部知识点，输出「知识点 → API → 实测」对照表
+- **验收**：graph 重放结果 == 串行；README 增「CUDA 知识点全景」章节
 
 ## 7. 性能与质量评估方案
 

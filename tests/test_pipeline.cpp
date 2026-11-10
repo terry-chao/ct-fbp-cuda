@@ -4,6 +4,7 @@
 //   3. 中心圆盘 FBP 重建值 ≈ 1（验证整体定标）
 //   4. Shepp-Logan CPU 全流程 RMSE
 //   5. GPU vs CPU 逐阶段一致性（无 CUDA 设备时跳过）
+//   6. SIRT 迭代重建 + GPU 指标（阶段 6：cuBLAS/Thrust/统一内存，无设备时跳过）
 #include "backprojector.h"
 #include "cuda_check.h"
 #include "filter.h"
@@ -12,6 +13,7 @@
 #include "metrics.h"
 #include "phantom.h"
 #include "projector.h"
+#include "sirt.h"
 
 #include <cmath>
 #include <cstdio>
@@ -195,12 +197,99 @@ static void testGpuMatchesCpu() {
     backprojectorGPUReleaseCache();
 }
 
+// 阶段 6：SIRT（少角度优于 FBP）+ fp16 矩阵精度 + 统一内存 + GPU 指标
+static void testSirtReconstruction() {
+    std::printf("[test] SIRT 迭代重建（cuBLAS/Thrust/UM）+ GPU 指标\n");
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess || count == 0) {
+        std::printf("    (跳过: 无可用 CUDA 设备)\n");
+        return;
+    }
+
+    Geometry g{};  // 极少角度：FBP 条纹伪影严重，SIRT 应显著更优
+    g.n = 128;
+    g.n_det = 128;
+    g.n_angle = 16;
+
+    std::vector<float> phantom = makeSheppLogan(g.n);
+    std::vector<float> sino(g.sinoPixels()), filt(g.sinoPixels()), reconFbp(g.imagePixels());
+    forwardProjectCPU(phantom.data(), g, sino.data());
+    rampFilterCPU(sino.data(), g, FilterWindow::RamLak, filt.data());
+    backprojectCPU(filt.data(), g, reconFbp.data());
+    Metrics mf = computeMetrics(phantom.data(), reconFbp.data(), g.imagePixels());
+    std::printf("    FBP  参照: RMSE=%.4f PSNR=%.2f dB\n", mf.rmse, mf.psnr);
+
+    float *d_b, *d_phantom, *d_x;
+    CT_CUDA_CHECK(cudaMalloc(&d_b, sizeof(float) * g.sinoPixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_phantom, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_x, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMemcpy(d_b, sino.data(), sizeof(float) * g.sinoPixels(), cudaMemcpyHostToDevice));
+    CT_CUDA_CHECK(cudaMemcpy(d_phantom, phantom.data(), sizeof(float) * g.imagePixels(), cudaMemcpyHostToDevice));
+
+    SirtOptions o;
+    o.iterations = 300;
+    o.relax = 1.9f;  // λ 接近 2 收敛更快（SIRT 稳定性要求 λ < 2）
+
+    // fp32(TF32) + 显式设备内存
+    o.prec = SirtMatrixPrecision::Fp32Tf32;
+    o.alloc = SirtAllocMode::Device;
+    SirtReport rep = sirtReconstructGPU(d_b, d_phantom, g, o, d_x);
+    std::vector<float> x32(g.imagePixels());
+    CT_CUDA_CHECK(cudaMemcpy(x32.data(), d_x, sizeof(float) * g.imagePixels(), cudaMemcpyDeviceToHost));
+    Metrics m32 = computeMetrics(phantom.data(), x32.data(), g.imagePixels());
+    std::printf("    SIRT fp32: RMSE=%.4f PSNR=%.2f dB (%.2f ms/iter, 残差 %.3e)\n", m32.rmse,
+                m32.psnr, rep.perIterMs, rep.finalResidual);
+    CHECK(m32.rmse < mf.rmse * 0.8, "SIRT RMSE %.4f 未显著优于 FBP %.4f", m32.rmse, mf.rmse);
+    CHECK(rep.finalResidual > 0.0 && rep.iterRmse.size() >= 2, "收敛曲线记录异常");
+
+    // fp16 矩阵：FP16 Tensor Core，结果应与 fp32 接近
+    o.prec = SirtMatrixPrecision::Fp16;
+    sirtReconstructGPU(d_b, d_phantom, g, o, d_x);
+    std::vector<float> x16(g.imagePixels());
+    CT_CUDA_CHECK(cudaMemcpy(x16.data(), d_x, sizeof(float) * g.imagePixels(), cudaMemcpyDeviceToHost));
+    Metrics m16 = computeMetrics(phantom.data(), x16.data(), g.imagePixels());
+    std::printf("    SIRT fp16: RMSE=%.4f PSNR=%.2f dB\n", m16.rmse, m16.psnr);
+    CHECK(std::fabs(m16.rmse - m32.rmse) < 5e-3, "fp16 RMSE %.4f 偏离 fp32 %.4f", m16.rmse, m32.rmse);
+    CHECK(m16.rmse < mf.rmse * 0.8, "SIRT fp16 RMSE %.4f 未优于 FBP", m16.rmse);
+
+    // 统一内存 + prefetch：迭代路径与显式设备内存相同，结果应一致
+    float *mb, *mx;
+    CT_CUDA_CHECK(cudaMallocManaged(&mb, sizeof(float) * g.sinoPixels()));
+    CT_CUDA_CHECK(cudaMallocManaged(&mx, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMemcpy(mb, sino.data(), sizeof(float) * g.sinoPixels(), cudaMemcpyHostToDevice));
+    o.prec = SirtMatrixPrecision::Fp32Tf32;
+    o.alloc = SirtAllocMode::Managed;
+    sirtReconstructGPU(mb, d_phantom, g, o, mx);
+    CT_CUDA_CHECK(cudaDeviceSynchronize());
+    Metrics mm = computeMetrics(phantom.data(), mx, g.imagePixels());
+    std::printf("    SIRT managed: RMSE=%.4f（与 device 差 %.2e）\n", mm.rmse,
+                std::fabs(mm.rmse - m32.rmse));
+    CHECK(std::fabs(mm.rmse - m32.rmse) < 1e-6, "managed RMSE %.6f 偏离 device %.6f", mm.rmse,
+          m32.rmse);
+
+    // GPU 指标 vs CPU 指标（同一份数据：mx 既可主机读又可设备读——统一内存）
+    Metrics mg = computeMetricsGPU(d_phantom, mx, g.imagePixels());
+    std::printf("    指标 GPU vs CPU: rmse 差 %.2e, max_abs 差 %.2e\n",
+                std::fabs(mg.rmse - mm.rmse), std::fabs(mg.max_abs - mm.max_abs));
+    CHECK(std::fabs(mg.rmse - mm.rmse) < 1e-6, "GPU 指标 rmse %.8f ≠ CPU %.8f", mg.rmse, mm.rmse);
+    CHECK(std::fabs(mg.max_abs - mm.max_abs) < 1e-6, "GPU 指标 max_abs 不一致");
+
+    CT_CUDA_CHECK(cudaFree(d_b));
+    CT_CUDA_CHECK(cudaFree(d_phantom));
+    CT_CUDA_CHECK(cudaFree(d_x));
+    CT_CUDA_CHECK(cudaFree(mb));
+    CT_CUDA_CHECK(cudaFree(mx));
+    sirtReleaseCache();
+}
+
 int main() {
     testPGMRoundTrip();
     testSingleEllipseSinogram();
     testDiskReconstruction();
     testSheppLoganCPU();
     testGpuMatchesCpu();
+    testSirtReconstruction();
 
     if (g_failures == 0) {
         std::printf("\n全部测试通过 ✔\n");

@@ -2,24 +2,12 @@
 // 采样公式与 CPU 参考实现逐字一致，保证结果可在容差内对齐。
 #include "projector.h"
 #include "cuda_check.h"
+#include "cuda_utils.cuh"  // bilinearSample（阶段 6 起跨文件共享）
 
 #include <cmath>
 
 namespace {
 
-__device__ __forceinline__ float bilinearSample(const float* __restrict__ img, int n,
-                                                float x, float y) {
-    float dx = 2.0f / n;
-    float fx = (x + 1.0f) / dx - 0.5f;  // 列方向（x → j）
-    float fy = (1.0f - y) / dx - 0.5f;  // 行方向（y → i）
-    int j0 = (int)floorf(fx), i0 = (int)floorf(fy);
-    float wx = fx - j0, wy = fy - i0;
-    auto at = [&](int jj, int ii) -> float {
-        return (jj >= 0 && jj < n && ii >= 0 && ii < n) ? img[(size_t)ii * n + jj] : 0.0f;
-    };
-    return at(j0, i0) * (1 - wx) * (1 - wy) + at(j0 + 1, i0) * wx * (1 - wy) +
-           at(j0, i0 + 1) * (1 - wx) * wy + at(j0 + 1, i0 + 1) * wx * wy;
-}
 
 __global__ void forwardProjectKernel(const float* __restrict__ img, int n, int n_det,
                                      int n_angle, float ds, float dt,

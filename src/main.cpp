@@ -9,6 +9,7 @@
 #include "metrics.h"
 #include "phantom.h"
 #include "projector.h"
+#include "sirt.h"
 #include "timer.h"
 
 #include <algorithm>
@@ -35,6 +36,12 @@ struct Options {
     std::string out = "output";
     int warmup = 3;
     int runs = 5;
+    // 阶段 6：SIRT 迭代重建
+    std::string recon = "fbp";     // fbp | sirt
+    int iters = 60;
+    double relax = 1.0;            // SIRT 松弛因子 λ（收敛稳定性要求 λ < 2）
+    std::string alloc = "device";  // device | managed（统一内存）
+    std::string matrix = "fp16";   // fp32(TF32) | fp16(Tensor Core)
 };
 
 static void usage(const char* prog) {
@@ -48,7 +55,12 @@ static void usage(const char* prog) {
         "  --filter F    ram-lak | hamming（默认 ram-lak）\n"
         "  --warmup W    GPU 计时前预热次数（默认 3）\n"
         "  --runs R      计时重复次数取平均（默认 5，CPU 预热固定 1 次）\n"
-        "  --out DIR     输出目录（默认 output）\n",
+        "  --out DIR     输出目录（默认 output）\n"
+        "  --recon R     fbp | sirt（默认 fbp；sirt 为迭代重建，少角度下质量更优，\n"
+        "                需 GPU，稠密矩阵限制 --size/--det/--angles ≤ 128）\n"
+        "  --iters N     SIRT 迭代次数（默认 60）\n"
+        "  --matrix M    fp32 | fp16（SIRT 系统矩阵精度：TF32 / FP16 Tensor Core，默认 fp16）\n"
+        "  --alloc A     device | managed（SIRT 内存模式：显式 / 统一内存，默认 device）\n",
         prog);
 }
 
@@ -70,6 +82,11 @@ static bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--warmup") o.warmup = std::atoi(next("--warmup").c_str());
         else if (a == "--runs") o.runs = std::atoi(next("--runs").c_str());
         else if (a == "--out") o.out = next("--out");
+        else if (a == "--recon") o.recon = next("--recon");
+        else if (a == "--iters") o.iters = std::atoi(next("--iters").c_str());
+        else if (a == "--relax") o.relax = std::atof(next("--relax").c_str());
+        else if (a == "--matrix") o.matrix = next("--matrix");
+        else if (a == "--alloc") o.alloc = next("--alloc");
         else if (a == "--help" || a == "-h") { usage(argv[0]); std::exit(0); }
         else {
             std::fprintf(stderr, "错误: 未知选项 '%s'\n\n", a.c_str());
@@ -77,12 +94,25 @@ static bool parseArgs(int argc, char** argv, Options& o) {
             return false;
         }
     }
-    if (o.g.n <= 0 || o.g.n_det <= 0 || o.g.n_angle <= 0 || o.runs <= 0 || o.warmup < 0) {
+    if (o.g.n <= 0 || o.g.n_det <= 0 || o.g.n_angle <= 0 || o.runs <= 0 || o.warmup < 0 ||
+        o.iters <= 0 || o.relax <= 0.0 || o.relax >= 2.0) {
         std::fprintf(stderr, "错误: 参数必须为正整数\n");
         return false;
     }
     if (o.mode != "cpu" && o.mode != "gpu" && o.mode != "both") {
         std::fprintf(stderr, "错误: --mode 只支持 cpu | gpu | both\n");
+        return false;
+    }
+    if (o.recon != "fbp" && o.recon != "sirt") {
+        std::fprintf(stderr, "错误: --recon 只支持 fbp | sirt\n");
+        return false;
+    }
+    if (o.matrix != "fp32" && o.matrix != "fp16") {
+        std::fprintf(stderr, "错误: --matrix 只支持 fp32 | fp16\n");
+        return false;
+    }
+    if (o.alloc != "device" && o.alloc != "managed") {
+        std::fprintf(stderr, "错误: --alloc 只支持 device | managed\n");
         return false;
     }
     if (o.filterName == "ram-lak") o.win = FilterWindow::RamLak;
@@ -150,6 +180,11 @@ int main(int argc, char** argv) {
     if (!parseArgs(argc, argv, o)) return 1;
     const bool runCpu = (o.mode == "cpu" || o.mode == "both");
     const bool runGpu = (o.mode == "gpu" || o.mode == "both");
+
+    if (o.recon == "sirt" && !runGpu) {
+        std::fprintf(stderr, "错误: --recon sirt 需要 GPU（--mode gpu 或 both）\n");
+        return 1;
+    }
 
     std::printf("=== ct-fbp-cuda ===\n");
     std::printf("配置: %dx%d 图像, %d 探测器, %d 角度, 滤波 %s, 模式 %s\n\n", o.g.n, o.g.n,
@@ -228,12 +263,77 @@ int main(int argc, char** argv) {
         if (!runCpu) {
             writePGM(o.out + "/sinogram.pgm", sinoG.data(), o.g.n_det, o.g.n_angle, "sinogram (GPU forward)");
         }
+
+        // ---- 阶段 6：SIRT 迭代重建（少角度场景质量优于 FBP，可与上方 FBP 结果对比）----
+        if (o.recon == "sirt") {
+            SirtOptions so;
+            so.iterations = o.iters;
+            so.relax = (float)o.relax;
+            so.prec = (o.matrix == "fp16") ? SirtMatrixPrecision::Fp16
+                                           : SirtMatrixPrecision::Fp32Tf32;
+            so.alloc = (o.alloc == "managed") ? SirtAllocMode::Managed
+                                              : SirtAllocMode::Device;
+
+            size_t need = sirtMatrixBytes(o.g, so.prec);
+            size_t freeB = 0, totalB = 0;
+            CT_CUDA_CHECK(cudaMemGetInfo(&freeB, &totalB));
+            if (need > freeB / 2) {  // 留裕量（迭代工作区 + 上下文）
+                std::fprintf(stderr,
+                             "错误: SIRT 系统矩阵峰值 %.1f MiB，超出可用显存 %.1f MiB 安全线\n"
+                             "      请减小 --size/--det/--angles（如 --size 128 --det 128 --angles 32）\n",
+                             need / 1048576.0, freeB / 1048576.0);
+                return 1;
+            }
+
+            float* d_x = nullptr;
+            if (so.alloc == SirtAllocMode::Managed)
+                CT_CUDA_CHECK(cudaMallocManaged(&d_x, sizeof(float) * o.g.imagePixels()));
+            else
+                CT_CUDA_CHECK(cudaMalloc(&d_x, sizeof(float) * o.g.imagePixels()));
+
+            SirtReport rep = sirtReconstructGPU(d_sino, d_img, o.g, so, d_x);
+            std::vector<float> reconSIRT(o.g.imagePixels());
+            if (so.alloc == SirtAllocMode::Managed) {
+                CT_CUDA_CHECK(cudaDeviceSynchronize());  // 统一内存：主机读取前同步
+                std::copy(d_x, d_x + o.g.imagePixels(), reconSIRT.begin());
+            } else {
+                CT_CUDA_CHECK(cudaMemcpy(reconSIRT.data(), d_x,
+                                         sizeof(float) * o.g.imagePixels(),
+                                         cudaMemcpyDeviceToHost));
+            }
+            writePGM(o.out + "/recon_sirt.pgm", reconSIRT.data(), o.g.n, o.g.n,
+                     "SIRT recon (" + o.matrix + ", " + std::to_string(o.iters) + " iters)");
+
+            Metrics ms = computeMetricsGPU(d_img, d_x, o.g.imagePixels());
+            std::printf("\n[SIRT] 系统矩阵 %dx%d，%s 矩阵 + %s 内存，峰值 %.1f MiB\n",
+                        o.g.n_angle * o.g.n_det, o.g.n * o.g.n, o.matrix.c_str(),
+                        o.alloc.c_str(), need / 1048576.0);
+            std::printf("  构建 %.1f ms（缓存命中时为 0）| 迭代 %d 次，平均 %.2f ms/次\n",
+                        rep.buildMs, o.iters, rep.perIterMs);
+            std::printf("  末次残差 ||b-Ax||₂ = %.4e\n", rep.finalResidual);
+            std::printf("  重建 vs 体模: RMSE = %.4f  PSNR = %.2f dB（FBP 对比见 [质量] 段）\n",
+                        ms.rmse, ms.psnr);
+
+            // 收敛曲线落盘
+            FILE* f = std::fopen((o.out + "/sirt_convergence.csv").c_str(), "w");
+            if (f) {
+                std::fprintf(f, "iter,rmse,residual\n");
+                for (size_t i = 0; i < rep.iterResidual.size(); ++i) {
+                    double rmse = i < rep.iterRmse.size() ? rep.iterRmse[i] : -1.0;
+                    std::fprintf(f, "%d,%.6f,%.6e\n", rep.iterIdx[i], rmse, rep.iterResidual[i]);
+                }
+                std::fclose(f);
+            }
+            CT_CUDA_CHECK(cudaFree(d_x));
+        }
+
         CT_CUDA_CHECK(cudaFree(d_img));
         CT_CUDA_CHECK(cudaFree(d_sino));
         CT_CUDA_CHECK(cudaFree(d_filt));
         CT_CUDA_CHECK(cudaFree(d_recon));
         rampFilterGPUReleaseCache();
         backprojectorGPUReleaseCache();
+        sirtReleaseCache();
     }
 
     // ---- 图像输出（各重建图统一灰阶，便于肉眼对比）-----------------------------
