@@ -2,6 +2,8 @@
 
 #include "geometry.h"
 
+#include <cuda_runtime.h>  // cudaStream_t（阶段 8 起公开函数支持指定流）
+
 // 前向投影（模拟扫描）：图像 → 正弦图。
 // 正弦图存储：row-major，n_angle 行 x n_det 列，第 a 行是角度 theta_a 的投影。
 //
@@ -12,8 +14,14 @@
 void forwardProjectCPU(const float* img, const Geometry& g, float* sino);
 
 // GPU naive kernel：1 线程 = 1 (角度, 探测器单元)，沿射线步进求和。
-// d_img / d_sino 均为设备指针，由调用方分配。
-void forwardProjectGPU(const float* d_img, const Geometry& g, float* d_sino);
+// d_img / d_sino 均为设备指针，由调用方分配；stream=nullptr 走默认流。
+void forwardProjectGPU(const float* d_img, const Geometry& g, float* d_sino,
+                       cudaStream_t stream = nullptr);
+
+// v1 的角度区间版（阶段 8）：只计算 [angleBegin, angleBegin+angleCount) 的行，
+// 供多流分块 / 多 GPU 切分复用同一 kernel。theta 仍按完整 n_angle 计。
+void forwardProjectGPURange(const float* d_img, const Geometry& g, float* d_sino,
+                            int angleBegin, int angleCount, cudaStream_t stream = nullptr);
 
 // ---- 阶段 7：同一积分的三种并行化变体（结果与 v1 在容差内一致）--------------
 // 沿射线的积分是归约，三个变体展示不同的跨线程求和手段：

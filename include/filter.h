@@ -2,6 +2,8 @@
 
 #include "geometry.h"
 
+#include <cuda_runtime.h>  // cudaStream_t（阶段 8 起公开函数支持指定流）
+
 // Ramp（Ram-Lak）滤波：对正弦图每行做 1D 高通滤波，频响 |ν|，可选窗抑制振铃。
 //
 // 实现走 FFT 域：行末尾补零到 M = pow2 >= 2*n_det，FFT → 乘 |ν|·窗/M → IFFT → 裁回。
@@ -22,7 +24,8 @@ int paddedLength(int n_det);
 void rampFilterCPU(const float* sino, const Geometry& g, FilterWindow win, float* out);
 
 // GPU 版：cuFFT 批量 1D FFT（plan 与缓冲按几何缓存，重复调用零额外开销）
-void rampFilterGPU(const float* d_sino, const Geometry& g, FilterWindow win, float* d_out);
+void rampFilterGPU(const float* d_sino, const Geometry& g, FilterWindow win, float* d_out,
+                   cudaStream_t stream = nullptr);
 
 // 释放 GPU 滤波的静态缓存（进程退出前调用，非必须）
 void rampFilterGPUReleaseCache();

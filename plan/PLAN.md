@@ -148,10 +148,10 @@ ct-fbp-cuda/
 - [x] 动态并行版（CDP2）：父 kernel 按角度 launch 子 kernel（`cudaStreamTailLaunch`，-rdc）
 - **验收**：三变体正弦图与 naive 版 max_abs < 1e-4；RESULTS 给出四版性能对比与结论
 
-### 阶段 8：异步流水线与多 GPU（streams/pinned/mgpu）
-- [ ] 现有 GPU 阶段函数加 `cudaStream_t` 参数（默认 nullptr 保持原行为）
-- [ ] 前向投影分角度块多流流水线：K 流 + `cudaMemcpyAsync` + `cudaMallocHost` 双缓冲
-- [ ] 多 GPU 版：按角度切分设备，peer copy 或各自 D2H（单卡退化为分块，如实记录）
+### 阶段 8：异步流水线与多 GPU（streams/pinned/mgpu）—— 已完成
+- [x] 现有 GPU 阶段函数加 `cudaStream_t` 参数（默认 nullptr 保持原行为）
+- [x] 前向投影分角度块多流流水线：K 流 + `cudaMemcpyAsync` + `cudaMallocHost` 双缓冲
+- [x] 多 GPU 版：按角度切分设备，peer copy 或各自 D2H（单卡退化为分块，如实记录）
 - **验收**：流水线正弦图 == 串行（< 1e-6）；RESULTS 记录重叠收益/开销
 
 ### 阶段 9：CUDA Graphs + 知识点巡礼

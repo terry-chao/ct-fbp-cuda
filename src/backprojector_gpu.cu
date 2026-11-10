@@ -112,16 +112,17 @@ __global__ void backprojectTextureKernel(cudaTextureObject_t tex, int n, int n_a
 
 }  // namespace
 
-void backprojectGPU(const float* d_sino, const Geometry& g, float* d_out) {
+void backprojectGPU(const float* d_sino, const Geometry& g, float* d_out, cudaStream_t stream) {
     ensureTrigTable(g);
     dim3 block(16, 16);
     dim3 grid((g.n + 15) / 16, (g.n + 15) / 16);
-    backprojectNaiveKernel<<<grid, block>>>(d_sino, g.n, g.n_det, g.n_angle, g.ds(),
-                                            g_trig.d_cos, g_trig.d_sin, d_out);
+    backprojectNaiveKernel<<<grid, block, 0, stream>>>(d_sino, g.n, g.n_det, g.n_angle, g.ds(),
+                                                       g_trig.d_cos, g_trig.d_sin, d_out);
     CT_CUDA_CHECK(cudaGetLastError());
 }
 
-void backprojectGPUTexture(const float* d_sino, const Geometry& g, float* d_out) {
+void backprojectGPUTexture(const float* d_sino, const Geometry& g, float* d_out,
+                           cudaStream_t stream) {
     ensureTrigTable(g);
 
     // cudaArray / texture object 按源指针缓存，数据本体每次 D2D 刷新
@@ -145,14 +146,14 @@ void backprojectGPUTexture(const float* d_sino, const Geometry& g, float* d_out)
         g_tex.n_det = g.n_det;
         g_tex.n_angle = g.n_angle;
     }
-    CT_CUDA_CHECK(cudaMemcpy2DToArray(g_tex.arr, 0, 0, d_sino, sizeof(float) * g.n_det,
-                                      sizeof(float) * g.n_det, g.n_angle,
-                                      cudaMemcpyDeviceToDevice));
+    CT_CUDA_CHECK(cudaMemcpy2DToArrayAsync(g_tex.arr, 0, 0, d_sino, sizeof(float) * g.n_det,
+                                            sizeof(float) * g.n_det, g.n_angle,
+                                            cudaMemcpyDeviceToDevice, stream));
 
     dim3 block(16, 16);
     dim3 grid((g.n + 15) / 16, (g.n + 15) / 16);
-    backprojectTextureKernel<<<grid, block>>>(g_tex.tex, g.n, g.n_angle, g_trig.d_cos,
-                                              g_trig.d_sin, d_out);
+    backprojectTextureKernel<<<grid, block, 0, stream>>>(g_tex.tex, g.n, g.n_angle, g_trig.d_cos,
+                                                         g_trig.d_sin, d_out);
     CT_CUDA_CHECK(cudaGetLastError());
 }
 

@@ -46,7 +46,8 @@ __global__ void cropKernel(const float2* __restrict__ buf, int n_det, int n_angl
 
 }  // namespace
 
-void rampFilterGPU(const float* d_sino, const Geometry& g, FilterWindow win, float* d_out) {
+void rampFilterGPU(const float* d_sino, const Geometry& g, FilterWindow win, float* d_out,
+                   cudaStream_t stream) {
     const int M = paddedLength(g.n_det);
     const int winId = (int)win;
 
@@ -86,13 +87,18 @@ void rampFilterGPU(const float* d_sino, const Geometry& g, FilterWindow win, flo
 
     const int totalBuf = g.n_angle * M;
     const int totalOut = g.n_angle * g.n_det;
-    padKernel<<<(totalBuf + 255) / 256, 256>>>(d_sino, g.n_det, g.n_angle, M, g_cache.d_buf);
+    // cuFFT plan 为共享缓存，每次调用把执行绑定到目标流（含 kernel 全部走该流）
+    CT_CUFFT_CHECK(cufftSetStream(g_cache.plan, stream));
+    padKernel<<<(totalBuf + 255) / 256, 256, 0, stream>>>(d_sino, g.n_det, g.n_angle, M,
+                                                          g_cache.d_buf);
     CT_CUDA_CHECK(cudaGetLastError());
     CT_CUFFT_CHECK(cufftExecC2C(g_cache.plan, g_cache.d_buf, g_cache.d_buf, CUFFT_FORWARD));
-    applyFilterKernel<<<(totalBuf + 255) / 256, 256>>>(g_cache.d_buf, g_cache.d_H, M, totalBuf);
+    applyFilterKernel<<<(totalBuf + 255) / 256, 256, 0, stream>>>(g_cache.d_buf, g_cache.d_H, M,
+                                                                  totalBuf);
     CT_CUDA_CHECK(cudaGetLastError());
     CT_CUFFT_CHECK(cufftExecC2C(g_cache.plan, g_cache.d_buf, g_cache.d_buf, CUFFT_INVERSE));
-    cropKernel<<<(totalOut + 255) / 256, 256>>>(g_cache.d_buf, g.n_det, g.n_angle, M, d_out);
+    cropKernel<<<(totalOut + 255) / 256, 256, 0, stream>>>(g_cache.d_buf, g.n_det, g.n_angle, M,
+                                                           d_out);
     CT_CUDA_CHECK(cudaGetLastError());
 }
 

@@ -10,10 +10,10 @@ namespace {
 
 
 __global__ void forwardProjectKernel(const float* __restrict__ img, int n, int n_det,
-                                     int n_angle, float ds, float dt,
+                                     int n_angle, float ds, float dt, int a0,
                                      float* __restrict__ sino) {
     int k = blockIdx.x * blockDim.x + threadIdx.x;  // 探测器单元
-    int a = blockIdx.y;                             // 角度
+    int a = a0 + blockIdx.y;                        // 角度（a0: 区间版偏移，阶段 8）
     if (k >= n_det) return;
 
     float th = a * (CT_PI / n_angle);
@@ -102,12 +102,19 @@ __global__ void forwardProjectAtomicKernel(const float* __restrict__ img, int n,
 
 }  // namespace
 
-void forwardProjectGPU(const float* d_img, const Geometry& g, float* d_sino) {
+void forwardProjectGPURange(const float* d_img, const Geometry& g, float* d_sino,
+                            int angleBegin, int angleCount, cudaStream_t stream) {
     const float dt = (g.dx() < g.ds()) ? g.dx() : g.ds();
     dim3 block(256);
-    dim3 grid((g.n_det + 255) / 256, g.n_angle);
-    forwardProjectKernel<<<grid, block>>>(d_img, g.n, g.n_det, g.n_angle, g.ds(), dt, d_sino);
+    dim3 grid((g.n_det + 255) / 256, angleCount);
+    forwardProjectKernel<<<grid, block, 0, stream>>>(d_img, g.n, g.n_det, g.n_angle, g.ds(), dt,
+                                                     angleBegin, d_sino);
     CT_CUDA_CHECK(cudaGetLastError());
+}
+
+void forwardProjectGPU(const float* d_img, const Geometry& g, float* d_sino,
+                       cudaStream_t stream) {
+    forwardProjectGPURange(d_img, g, d_sino, 0, g.n_angle, stream);
 }
 
 void forwardProjectGPUWarp(const float* d_img, const Geometry& g, float* d_sino) {

@@ -8,6 +8,7 @@
 #include "io.h"
 #include "metrics.h"
 #include "phantom.h"
+#include "pipeline.h"
 #include "projector.h"
 #include "sirt.h"
 #include "timer.h"
@@ -43,6 +44,8 @@ struct Options {
     std::string alloc = "device";  // device | managed（统一内存）
     std::string matrix = "fp16";   // fp32(TF32) | fp16(Tensor Core)
     std::string forward = "v1";    // v1 | warp | atomic | cdp（阶段 7 变体）
+    int streams = 0;               // 阶段 8：>0 时启用 K 流异步流水线产正弦图
+    bool mgpu = false;             // 阶段 8：多 GPU 前向投影
 };
 
 static void usage(const char* prog) {
@@ -89,6 +92,8 @@ static bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--matrix") o.matrix = next("--matrix");
         else if (a == "--alloc") o.alloc = next("--alloc");
         else if (a == "--forward") o.forward = next("--forward");
+        else if (a == "--streams") o.streams = std::atoi(next("--streams").c_str());
+        else if (a == "--mgpu") o.mgpu = true;
         else if (a == "--help" || a == "-h") { usage(argv[0]); std::exit(0); }
         else {
             std::fprintf(stderr, "错误: 未知选项 '%s'\n\n", a.c_str());
@@ -258,8 +263,26 @@ int main(int argc, char** argv) {
             stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPUAtomic(d_img, o.g, d_sino); }, o.warmup, o.runs);
         else
             stages[0].gpu_ms = timeGpuMs([&] { forwardProjectGPUCdp(d_img, o.g, d_sino); }, o.warmup, o.runs);
-        CT_CUDA_CHECK(cudaMemcpy(sinoG.data(), d_sino, sizeof(float) * o.g.sinoPixels(),
-                                  cudaMemcpyDeviceToHost));
+        // ---- 阶段 8：异步流水线 / 多 GPU 产正弦图（覆盖上方 d_sino/sinoG 的数据）----
+        if (o.streams > 0) {
+            PipelineReport pr = forwardProjectGPUPipeline(d_img, o.g, d_sino, sinoG.data(),
+                                                          o.streams);
+            std::printf("\n[异步流水线] %d 流 / %d 块（分角度块 + 锁页缓冲 + 异步 D2H）\n",
+                        pr.streams, pr.chunks);
+            std::printf("  流水 %.2f ms vs 串行 %.2f ms | D2H %.1f MB | 吞吐 %.2f GB/s\n",
+                        pr.pipelinedMs, pr.serialMs, pr.dataMB, pr.gbps);
+        } else if (o.mgpu) {
+            MultiGpuReport mr = forwardProjectGPUMultiGPU(phantom.data(), o.g, sinoG.data());
+            std::printf("\n[多GPU] %d 设备，前向投影 %.2f ms\n  拓扑: %s\n", mr.deviceCount,
+                        mr.totalMs, mr.topology.c_str());
+            // 回填设备端正弦图供后续滤波/反投影使用
+            CT_CUDA_CHECK(cudaMemcpy(d_sino, sinoG.data(), sizeof(float) * o.g.sinoPixels(),
+                                     cudaMemcpyHostToDevice));
+        } else {
+            CT_CUDA_CHECK(cudaMemcpy(sinoG.data(), d_sino, sizeof(float) * o.g.sinoPixels(),
+                                     cudaMemcpyDeviceToHost));
+        }
+
         stages[1].gpu_ms = timeGpuMs([&] { rampFilterGPU(d_sino, o.g, o.win, d_filt); }, o.warmup, o.runs);
         CT_CUDA_CHECK(cudaMemcpy(filtG.data(), d_filt, sizeof(float) * o.g.sinoPixels(),
                                   cudaMemcpyDeviceToHost));

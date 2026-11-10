@@ -24,6 +24,7 @@ add_library(ct_core STATIC
     src/projector_cpu.cpp
     src/projector_gpu.cu
     src/projector_cdp.cu
+    src/pipeline_gpu.cu
     src/filter_cpu.cpp
     src/filter_gpu.cu
     src/backprojector_cpu.cpp

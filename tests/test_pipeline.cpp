@@ -6,6 +6,7 @@
 //   5. GPU vs CPU 逐阶段一致性（无 CUDA 设备时跳过）
 //   6. SIRT 迭代重建 + GPU 指标（阶段 6：cuBLAS/Thrust/统一内存，无设备时跳过）
 //   7. 前向投影变体一致性（阶段 7：warp/atomic/cdp vs v1，无设备时跳过）
+//   8. 异步流水线/多GPU 前向投影一致性（阶段 8，无设备时跳过）
 #include "backprojector.h"
 #include "cuda_check.h"
 #include "filter.h"
@@ -13,6 +14,7 @@
 #include "io.h"
 #include "metrics.h"
 #include "phantom.h"
+#include "pipeline.h"
 #include "projector.h"
 #include "sirt.h"
 
@@ -325,6 +327,49 @@ static void testForwardVariantsMatch() {
     for (auto& p : d_sino) CT_CUDA_CHECK(cudaFree(p));
 }
 
+// 阶段 8：多流异步流水线与多 GPU 前向投影 == 串行 v1
+static void testPipelineAndMultiGpu() {
+    std::printf("[test] 异步流水线/多GPU 前向投影一致性\n");
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess || count == 0) {
+        std::printf("    (跳过: 无可用 CUDA 设备)\n");
+        return;
+    }
+
+    Geometry g{};
+    g.n = 128;
+    g.n_det = 128;
+    g.n_angle = 90;
+    std::vector<float> phantom = makeSheppLogan(g.n);
+
+    float *d_img, *d_sino;
+    CT_CUDA_CHECK(cudaMalloc(&d_img, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_sino, sizeof(float) * g.sinoPixels()));
+    CT_CUDA_CHECK(cudaMemcpy(d_img, phantom.data(), sizeof(float) * g.imagePixels(), cudaMemcpyHostToDevice));
+
+    std::vector<float> ref(g.sinoPixels());
+    forwardProjectGPU(d_img, g, d_sino);
+    CT_CUDA_CHECK(cudaMemcpy(ref.data(), d_sino, sizeof(float) * g.sinoPixels(), cudaMemcpyDeviceToHost));
+
+    // 多流流水线（3 流 30 块）：同一 kernel 按角度分块，结果应与全量一致
+    std::vector<float> got(g.sinoPixels());
+    PipelineReport pr = forwardProjectGPUPipeline(d_img, g, d_sino, got.data(), 3);
+    Metrics m1 = computeMetrics(ref.data(), got.data(), g.sinoPixels());
+    std::printf("    pipeline 3 流/%d 块: max_abs=%.3e (%.2f vs %.2f ms)\n", m1.max_abs,
+                pr.chunks, pr.pipelinedMs, pr.serialMs);
+    CHECK(m1.max_abs < 1e-6f, "流水线 max_abs %.3e 超阈值", m1.max_abs);
+
+    // 多 GPU（单卡机器上为 1 设备退化路径，代码路径相同）
+    MultiGpuReport mr = forwardProjectGPUMultiGPU(phantom.data(), g, got.data());
+    Metrics m2 = computeMetrics(ref.data(), got.data(), g.sinoPixels());
+    std::printf("    多GPU %d 设备: max_abs=%.3e (%.2f ms)\n", mr.deviceCount, m2.max_abs, mr.totalMs);
+    CHECK(m2.max_abs < 1e-6f, "多GPU max_abs %.3e 超阈值", m2.max_abs);
+
+    CT_CUDA_CHECK(cudaFree(d_img));
+    CT_CUDA_CHECK(cudaFree(d_sino));
+}
+
 int main() {
     testPGMRoundTrip();
     testSingleEllipseSinogram();
@@ -333,6 +378,7 @@ int main() {
     testGpuMatchesCpu();
     testSirtReconstruction();
     testForwardVariantsMatch();
+    testPipelineAndMultiGpu();
 
     if (g_failures == 0) {
         std::printf("\n全部测试通过 ✔\n");
