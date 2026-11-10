@@ -32,7 +32,8 @@ add_library(ct_core STATIC
     src/io.cpp
     src/metrics.cpp
     src/metrics_gpu.cu
-    src/sirt_gpu.cu)
+    src/sirt_gpu.cu
+    src/graph_gpu.cu)
 target_include_directories(ct_core PUBLIC include)
 # thrust 为纯头文件库（位于 CUDA 工具包 include 目录，经 cudart 的接口路径引入）
 target_link_libraries(ct_core PUBLIC CUDA::cudart CUDA::cufft CUDA::cublas)
@@ -51,6 +52,12 @@ target_compile_options(ct_core PRIVATE
 add_executable(ct_fbp src/main.cpp)
 target_link_libraries(ct_fbp PRIVATE ct_core)
 target_compile_options(ct_fbp PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>)
+
+# 知识点巡礼（阶段 9）：小配置一键跑全部功能
+add_executable(ct_tour src/tour.cpp)
+target_link_libraries(ct_tour PRIVATE ct_core)
+target_include_directories(ct_tour PRIVATE src)
+target_compile_options(ct_tour PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>)
 
 # 测试（src/ 下有内部工具头 cuda_check.h）
 enable_testing()

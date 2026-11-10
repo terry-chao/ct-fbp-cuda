@@ -154,9 +154,9 @@ ct-fbp-cuda/
 - [x] 多 GPU 版：按角度切分设备，peer copy 或各自 D2H（单卡退化为分块，如实记录）
 - **验收**：流水线正弦图 == 串行（< 1e-6）；RESULTS 记录重叠收益/开销
 
-### 阶段 9：CUDA Graphs + 知识点巡礼
-- [ ] 滤波→反投影链 stream capture → instantiate → replay，量化 launch 开销
-- [ ] `ct_tour` 二进制：小配置一键跑全部知识点，输出「知识点 → API → 实测」对照表
+### 阶段 9：CUDA Graphs + 知识点巡礼 —— 已完成
+- [x] 滤波→反投影链 stream capture → instantiate → replay，量化 launch 开销
+- [x] `ct_tour` 二进制：小配置一键跑全部知识点，输出「知识点 → API → 实测」对照表
 - **验收**：graph 重放结果 == 串行；README 增「CUDA 知识点全景」章节
 
 ## 7. 性能与质量评估方案

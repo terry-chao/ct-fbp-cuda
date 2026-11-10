@@ -5,6 +5,7 @@
 #include "cuda_check.h"
 #include "filter.h"
 #include "geometry.h"
+#include "graph.h"
 #include "io.h"
 #include "metrics.h"
 #include "phantom.h"
@@ -46,6 +47,7 @@ struct Options {
     std::string forward = "v1";    // v1 | warp | atomic | cdp（阶段 7 变体）
     int streams = 0;               // 阶段 8：>0 时启用 K 流异步流水线产正弦图
     bool mgpu = false;             // 阶段 8：多 GPU 前向投影
+    bool graph = false;            // 阶段 9：滤波→反投影链 CUDA Graph 重放基准
 };
 
 static void usage(const char* prog) {
@@ -63,8 +65,14 @@ static void usage(const char* prog) {
         "  --recon R     fbp | sirt（默认 fbp；sirt 为迭代重建，少角度下质量更优，\n"
         "                需 GPU，稠密矩阵限制 --size/--det/--angles ≤ 128）\n"
         "  --iters N     SIRT 迭代次数（默认 60）\n"
+        "  --relax X     SIRT 松弛因子 λ（默认 1.0，须 < 2）\n"
         "  --matrix M    fp32 | fp16（SIRT 系统矩阵精度：TF32 / FP16 Tensor Core，默认 fp16）\n"
-        "  --alloc A     device | managed（SIRT 内存模式：显式 / 统一内存，默认 device）\n",
+        "  --alloc A     device | managed（SIRT 内存模式：显式 / 统一内存，默认 device）\n"
+        "  --forward V   v1 | warp | atomic | cdp（前向投影变体：naive / warp 协作归约 /\n"
+        "                原子散射 / 动态并行，默认 v1；结果一致，性能见计时表）\n"
+        "  --streams K   K > 0 时前向投影按角度分块跑 K 流异步流水（锁页+异步 D2H，阶段 8）\n"
+        "  --mgpu        前向投影按角度切分到所有 GPU（peer 汇聚，单卡退化为分块）\n"
+        "  --graph       滤波→反投影链捕获为 CUDA Graph 重放，对比手动 launch 开销\n",
         prog);
 }
 
@@ -94,6 +102,7 @@ static bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--forward") o.forward = next("--forward");
         else if (a == "--streams") o.streams = std::atoi(next("--streams").c_str());
         else if (a == "--mgpu") o.mgpu = true;
+        else if (a == "--graph") o.graph = true;
         else if (a == "--help" || a == "-h") { usage(argv[0]); std::exit(0); }
         else {
             std::fprintf(stderr, "错误: 未知选项 '%s'\n\n", a.c_str());
@@ -295,6 +304,21 @@ int main(int argc, char** argv) {
 
         if (!runCpu) {
             writePGM(o.out + "/sinogram.pgm", sinoG.data(), o.g.n_det, o.g.n_angle, "sinogram (GPU forward)");
+        }
+
+        // ---- 阶段 9：CUDA Graphs（滤波→反投影链捕获重放，对比手动 launch）----
+        if (o.graph) {
+            GraphReport gr = reconstructFBPGraph(d_sino, o.g, o.win, false, d_recon, 50);
+            std::vector<float> reconGraph(o.g.imagePixels());
+            CT_CUDA_CHECK(cudaMemcpy(reconGraph.data(), d_recon,
+                                     sizeof(float) * o.g.imagePixels(), cudaMemcpyDeviceToHost));
+            Metrics mg = reconGN.empty()
+                             ? Metrics{0, 0, 0}
+                             : computeMetrics(reconGN.data(), reconGraph.data(), o.g.imagePixels());
+            std::printf("\n[CUDA Graph] 滤波→反投影 %d 节点，重放 %.3f ms vs 手动 %.3f ms（%d 次）\n",
+                        gr.nodes, gr.graphMs, gr.manualMs, gr.replays);
+            if (!reconGN.empty())
+                std::printf("  重放结果 vs 手动链: max_abs = %.3e\n", mg.max_abs);
         }
 
         // ---- 阶段 6：SIRT 迭代重建（少角度场景质量优于 FBP，可与上方 FBP 结果对比）----

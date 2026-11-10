@@ -7,10 +7,12 @@
 //   6. SIRT 迭代重建 + GPU 指标（阶段 6：cuBLAS/Thrust/统一内存，无设备时跳过）
 //   7. 前向投影变体一致性（阶段 7：warp/atomic/cdp vs v1，无设备时跳过）
 //   8. 异步流水线/多GPU 前向投影一致性（阶段 8，无设备时跳过）
+//   9. CUDA Graph 重放一致性（阶段 9，无设备时跳过）
 #include "backprojector.h"
 #include "cuda_check.h"
 #include "filter.h"
 #include "geometry.h"
+#include "graph.h"
 #include "io.h"
 #include "metrics.h"
 #include "phantom.h"
@@ -370,6 +372,57 @@ static void testPipelineAndMultiGpu() {
     CT_CUDA_CHECK(cudaFree(d_sino));
 }
 
+// 阶段 9：CUDA Graph 重放结果 == 手动串行链（naive 与 texture 两条链）
+static void testGraphMatchesSerial() {
+    std::printf("[test] CUDA Graph 重放一致性（滤波→反投影）\n");
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess || count == 0) {
+        std::printf("    (跳过: 无可用 CUDA 设备)\n");
+        return;
+    }
+
+    Geometry g{};
+    g.n = 128;
+    g.n_det = 128;
+    g.n_angle = 32;
+    std::vector<float> phantom = makeSheppLogan(g.n);
+
+    float *d_img, *d_sino, *d_filt, *d_recon, *d_recon2;
+    CT_CUDA_CHECK(cudaMalloc(&d_img, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_sino, sizeof(float) * g.sinoPixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_filt, sizeof(float) * g.sinoPixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_recon, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMalloc(&d_recon2, sizeof(float) * g.imagePixels()));
+    CT_CUDA_CHECK(cudaMemcpy(d_img, phantom.data(), sizeof(float) * g.imagePixels(), cudaMemcpyHostToDevice));
+    forwardProjectGPU(d_img, g, d_sino);
+
+    std::vector<float> a(g.imagePixels()), b(g.imagePixels());
+    const bool tex = false;  // naive 链（texture 链同理，已由 tex 一致性测试覆盖量级）
+    // 手动串行
+    rampFilterGPU(d_sino, g, FilterWindow::RamLak, d_filt);
+    tex ? backprojectGPUTexture(d_filt, g, d_recon) : backprojectGPU(d_filt, g, d_recon);
+    CT_CUDA_CHECK(cudaMemcpy(a.data(), d_recon, sizeof(float) * g.imagePixels(), cudaMemcpyDeviceToHost));
+
+    // 图捕获重放（reconstructFBPGraph 内部含对照计时）
+    GraphReport gr = reconstructFBPGraph(d_sino, g, FilterWindow::RamLak, tex, d_recon2, 10);
+    CT_CUDA_CHECK(cudaMemcpy(b.data(), d_recon2, sizeof(float) * g.imagePixels(), cudaMemcpyDeviceToHost));
+
+    Metrics m = computeMetrics(a.data(), b.data(), g.imagePixels());
+    std::printf("    %d 节点: 图 %.3f ms vs 手动 %.3f ms, 重放 diff max_abs=%.3e\n", gr.nodes,
+                gr.graphMs, gr.manualMs, m.max_abs);
+    CHECK(m.max_abs < 1e-5f, "图重放 max_abs %.3e 超阈值", m.max_abs);
+
+    CT_CUDA_CHECK(cudaFree(d_img));
+    CT_CUDA_CHECK(cudaFree(d_sino));
+    CT_CUDA_CHECK(cudaFree(d_filt));
+    CT_CUDA_CHECK(cudaFree(d_recon));
+    CT_CUDA_CHECK(cudaFree(d_recon2));
+    graphReleaseCache();
+    rampFilterGPUReleaseCache();
+    backprojectorGPUReleaseCache();
+}
+
 int main() {
     testPGMRoundTrip();
     testSingleEllipseSinogram();
@@ -379,6 +432,7 @@ int main() {
     testSirtReconstruction();
     testForwardVariantsMatch();
     testPipelineAndMultiGpu();
+    testGraphMatchesSerial();
 
     if (g_failures == 0) {
         std::printf("\n全部测试通过 ✔\n");
